@@ -1,0 +1,7 @@
+model_pairs:
+  - name: smollm
+    target: HuggingFaceTB/SmolLM-360M
+    draft: HuggingFaceTB/SmolLM-135M
+  - name: pythia
+    target: EleutherAI/pythia-410m-deduped
+    draft: EleutherAI/pythia-160m-deduped
