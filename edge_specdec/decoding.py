@@ -151,8 +151,14 @@ def target_only_greedy_cached(
     _sync_if_cuda(device)
     total_start = time.perf_counter()
 
+    attention_mask = torch.ones_like(output_ids)
+
     with timed_bucket(timings, "prefill_time", device):
-        outputs = target_model(output_ids, use_cache=True)
+        outputs = target_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
     past_key_values = outputs.past_key_values
     next_logits = outputs.logits[:, -1, :]
 
@@ -162,6 +168,10 @@ def target_only_greedy_cached(
 
         with timed_bucket(timings, "kv_or_input_update_time", device):
             output_ids = _append_token(output_ids, next_token)
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones_like(next_token)],
+                dim=-1,
+            )
 
         if eos_token_id is not None and int(next_token.item()) == eos_token_id:
             break
@@ -169,6 +179,7 @@ def target_only_greedy_cached(
         with timed_bucket(timings, "target_verify_time", device):
             outputs = target_model(
                 next_token,
+                attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=True,
             )
@@ -346,9 +357,19 @@ def speculative_greedy_cached(
     _sync_if_cuda(device)
     total_start = time.perf_counter()
 
+    attention_mask = torch.ones_like(output_ids)
+
     with timed_bucket(timings, "prefill_time", device):
-        target_outputs = target_model(output_ids, use_cache=True)
-        draft_outputs = draft_model(output_ids, use_cache=True)
+        target_outputs = target_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
+        draft_outputs = draft_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
     target_past = target_outputs.past_key_values
     draft_past = draft_outputs.past_key_values
     target_next_logits = target_outputs.logits[:, -1, :]
@@ -382,6 +403,11 @@ def speculative_greedy_cached(
             with timed_bucket(timings, "draft_generate_time", device):
                 draft_outputs = draft_model(
                     draft_next,
+                    attention_mask=torch.ones(
+                        (1, attention_mask.shape[-1] + i + 1),
+                        dtype=attention_mask.dtype,
+                        device=device,
+                    ),
                     past_key_values=provisional_draft_past,
                     use_cache=True,
                 )
@@ -397,6 +423,11 @@ def speculative_greedy_cached(
         with timed_bucket(timings, "target_verify_time", device):
             verify_outputs = target_model(
                 draft_tensor,
+                attention_mask=torch.ones(
+                    (1, attention_mask.shape[-1] + draft_tensor.shape[-1]),
+                    dtype=attention_mask.dtype,
+                    device=device,
+                ),
                 past_key_values=target_past,
                 use_cache=True,
             )
@@ -443,15 +474,20 @@ def speculative_greedy_cached(
         new_tensor = _tokens_tensor(new_tokens, input_ids)
         with timed_bucket(timings, "kv_or_input_update_time", device):
             output_ids = torch.cat([output_ids, new_tensor], dim=-1)
+            attention_mask = torch.ones_like(output_ids)
 
+            # Rebuild caches from the accepted target path. This is deliberately
+            # conservative: it preserves exact greedy correctness while keeping
+            # target verification itself cache-aware. A later optimized version
+            # can replace this with careful incremental cache slicing/update.
             target_outputs = target_model(
-                new_tensor,
-                past_key_values=target_past,
+                output_ids,
+                attention_mask=attention_mask,
                 use_cache=True,
             )
             draft_outputs = draft_model(
-                new_tensor,
-                past_key_values=draft_past,
+                output_ids,
+                attention_mask=attention_mask,
                 use_cache=True,
             )
 

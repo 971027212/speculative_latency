@@ -97,6 +97,39 @@ def main() -> None:
 
             matched = baseline.output_ids == spec.output_ids
             if not matched:
+                first_diff = next(
+                    (
+                        i
+                        for i, (left, right) in enumerate(
+                            zip(baseline.output_ids, spec.output_ids)
+                        )
+                        if left != right
+                    ),
+                    min(len(baseline.output_ids), len(spec.output_ids)),
+                )
+                print(
+                    json.dumps(
+                        {
+                            "error": "speculative_mismatch",
+                            "model_pair": pair.name,
+                            "implementation": args.implementation,
+                            "prompt_id": prompt_id,
+                            "first_diff_index": first_diff,
+                            "baseline_len": len(baseline.output_ids),
+                            "spec_len": len(spec.output_ids),
+                            "baseline_output": tokenizer.decode(
+                                baseline.output_ids,
+                                skip_special_tokens=True,
+                            ),
+                            "spec_output": tokenizer.decode(
+                                spec.output_ids,
+                                skip_special_tokens=True,
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
                 raise AssertionError(
                     "Speculative output does not match target-only greedy output."
                 )
