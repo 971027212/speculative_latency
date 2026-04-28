@@ -8,7 +8,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from edge_specdec.config import load_model_pairs, select_model_pairs
-from edge_specdec.decoding import speculative_greedy, target_only_greedy
+from edge_specdec.decoding import (
+    speculative_greedy,
+    speculative_greedy_cached,
+    target_only_greedy,
+    target_only_greedy_cached,
+)
 from edge_specdec.models import choose_device, load_causal_lm, load_tokenizer
 from edge_specdec.prompts import DEFAULT_PROMPTS
 
@@ -23,6 +28,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--draft-k", type=int, default=4)
     parser.add_argument("--rtt-ms", type=float, default=0.0)
+    parser.add_argument(
+        "--implementation",
+        default="full-prefix",
+        choices=["full-prefix", "kv-cache"],
+    )
     parser.add_argument("--dtype", default="float16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--trust-remote-code", action="store_true")
     return parser.parse_args()
@@ -52,21 +62,38 @@ def main() -> None:
         for prompt_id, prompt in enumerate(prompts):
             encoded = tokenizer(prompt, return_tensors="pt").to(device)
             input_ids = encoded["input_ids"]
-            baseline = target_only_greedy(
-                target_model,
-                input_ids,
-                max_new_tokens=args.max_new_tokens,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-            spec = speculative_greedy(
-                target_model,
-                draft_model,
-                input_ids,
-                max_new_tokens=args.max_new_tokens,
-                draft_k=args.draft_k,
-                rtt_ms=args.rtt_ms,
-                eos_token_id=tokenizer.eos_token_id,
-            )
+            if args.implementation == "kv-cache":
+                baseline = target_only_greedy_cached(
+                    target_model,
+                    input_ids,
+                    max_new_tokens=args.max_new_tokens,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+                spec = speculative_greedy_cached(
+                    target_model,
+                    draft_model,
+                    input_ids,
+                    max_new_tokens=args.max_new_tokens,
+                    draft_k=args.draft_k,
+                    rtt_ms=args.rtt_ms,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+            else:
+                baseline = target_only_greedy(
+                    target_model,
+                    input_ids,
+                    max_new_tokens=args.max_new_tokens,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+                spec = speculative_greedy(
+                    target_model,
+                    draft_model,
+                    input_ids,
+                    max_new_tokens=args.max_new_tokens,
+                    draft_k=args.draft_k,
+                    rtt_ms=args.rtt_ms,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
 
             matched = baseline.output_ids == spec.output_ids
             if not matched:
@@ -79,6 +106,7 @@ def main() -> None:
                     {
                         "step": "greedy_spec_decode",
                         "model_pair": pair.name,
+                        "implementation": args.implementation,
                         "prompt_id": prompt_id,
                         "rtt_ms": args.rtt_ms,
                         "max_new_tokens": args.max_new_tokens,

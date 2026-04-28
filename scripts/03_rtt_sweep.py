@@ -10,13 +10,19 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from edge_specdec.config import load_model_pairs, select_model_pairs
-from edge_specdec.decoding import speculative_greedy, target_only_greedy
+from edge_specdec.decoding import (
+    speculative_greedy,
+    speculative_greedy_cached,
+    target_only_greedy,
+    target_only_greedy_cached,
+)
 from edge_specdec.models import choose_device, load_causal_lm, load_tokenizer
 from edge_specdec.prompts import DEFAULT_PROMPTS
 
 
 FIELDNAMES = [
     "model_pair",
+    "implementation",
     "target",
     "draft",
     "prompt_id",
@@ -51,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", action="append", help="Prompt text. Repeatable.")
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--draft-k", type=int, default=4)
+    parser.add_argument(
+        "--implementation",
+        default="full-prefix",
+        choices=["full-prefix", "kv-cache"],
+    )
     parser.add_argument("--rtt-ms", type=float, nargs="+", default=[0, 5, 10, 20, 50, 100])
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--dtype", default="float16", choices=["auto", "float16", "bfloat16", "float32"])
@@ -100,27 +111,47 @@ def main() -> None:
                 cache_key = (prompt_id, repeat)
 
                 if cache_key not in baseline_cache:
-                    baseline_cache[cache_key] = target_only_greedy(
-                        target_model,
-                        input_ids,
-                        max_new_tokens=args.max_new_tokens,
-                        eos_token_id=tokenizer.eos_token_id,
-                    )
+                    if args.implementation == "kv-cache":
+                        baseline_cache[cache_key] = target_only_greedy_cached(
+                            target_model,
+                            input_ids,
+                            max_new_tokens=args.max_new_tokens,
+                            eos_token_id=tokenizer.eos_token_id,
+                        )
+                    else:
+                        baseline_cache[cache_key] = target_only_greedy(
+                            target_model,
+                            input_ids,
+                            max_new_tokens=args.max_new_tokens,
+                            eos_token_id=tokenizer.eos_token_id,
+                        )
                 baseline = baseline_cache[cache_key]
 
-                spec = speculative_greedy(
-                    target_model,
-                    draft_model,
-                    input_ids,
-                    max_new_tokens=args.max_new_tokens,
-                    draft_k=args.draft_k,
-                    rtt_ms=rtt_ms,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
+                if args.implementation == "kv-cache":
+                    spec = speculative_greedy_cached(
+                        target_model,
+                        draft_model,
+                        input_ids,
+                        max_new_tokens=args.max_new_tokens,
+                        draft_k=args.draft_k,
+                        rtt_ms=rtt_ms,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                else:
+                    spec = speculative_greedy(
+                        target_model,
+                        draft_model,
+                        input_ids,
+                        max_new_tokens=args.max_new_tokens,
+                        draft_k=args.draft_k,
+                        rtt_ms=rtt_ms,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
 
                 matched = baseline.output_ids == spec.output_ids
                 row = {
                     "model_pair": pair.name,
+                    "implementation": args.implementation,
                     "target": pair.target,
                     "draft": pair.draft,
                     "prompt_id": prompt_id,

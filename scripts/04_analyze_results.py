@@ -34,8 +34,12 @@ def main() -> None:
         bad = df.loc[~df["matched_target_only"], ["model_pair", "prompt_id", "rtt_ms"]]
         raise ValueError(f"Some speculative outputs mismatched target-only:\n{bad}")
 
+    group_columns = ["model_pair", "rtt_ms"]
+    if "implementation" in df.columns:
+        group_columns.insert(1, "implementation")
+
     grouped = (
-        df.groupby(["model_pair", "rtt_ms"], as_index=False)
+        df.groupby(group_columns, as_index=False)
         .agg(
             target_only_time=("target_only_time", "mean"),
             spec_time=("spec_time", "mean"),
@@ -44,7 +48,7 @@ def main() -> None:
             rounds=("rounds", "mean"),
             **{col: (col, "mean") for col in TIME_COLUMNS},
         )
-        .sort_values(["model_pair", "rtt_ms"])
+        .sort_values(group_columns)
     )
     grouped["upload_wait_share"] = grouped["upload_wait_time"] / grouped["spec_time"]
     grouped["speedup_vs_mean_times"] = (
@@ -59,8 +63,7 @@ def main() -> None:
     print(
         grouped[
             [
-                "model_pair",
-                "rtt_ms",
+                *group_columns,
                 "speedup",
                 "accept_rate",
                 "upload_wait_share",
@@ -71,14 +74,19 @@ def main() -> None:
     )
 
     print("\n=== Break-even RTT ===")
-    for model_pair, sub in grouped.groupby("model_pair"):
+    break_even_groups = ["model_pair"]
+    if "implementation" in grouped.columns:
+        break_even_groups.append("implementation")
+
+    for key, sub in grouped.groupby(break_even_groups):
+        label = " / ".join(str(part) for part in (key if isinstance(key, tuple) else (key,)))
         below = sub[sub["speedup"] <= 1.0]
         if below.empty:
-            print(f"{model_pair}: not reached in tested RTT range")
+            print(f"{label}: not reached in tested RTT range")
         else:
             first = below.iloc[0]
             print(
-                f"{model_pair}: {first['rtt_ms']} ms "
+                f"{label}: {first['rtt_ms']} ms "
                 f"(mean speedup={first['speedup']:.3f})"
             )
 

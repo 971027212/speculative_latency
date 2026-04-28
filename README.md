@@ -39,6 +39,16 @@ python scripts/02_greedy_spec_decode.py --pair smollm --max-new-tokens 32 --draf
 
 如果 speculative 输出和 target-only greedy 不一致，脚本会直接报错。
 
+默认实现是 `full-prefix`，每一步都重新 forward 完整上下文，适合学习 accept/reject 逻辑。更接近真实推理的版本使用 KV cache：
+
+```bash
+python scripts/02_greedy_spec_decode.py \
+  --pair smollm \
+  --max-new-tokens 32 \
+  --draft-k 4 \
+  --implementation kv-cache
+```
+
 核心逻辑在 `edge_specdec/decoding.py`：
 
 1. draft model 连续生成 `draft_k` 个候选 token。
@@ -57,6 +67,7 @@ python scripts/03_rtt_sweep.py \
   --pair smollm \
   --max-new-tokens 32 \
   --draft-k 4 \
+  --implementation kv-cache \
   --repeats 3 \
   --rtt-ms 0 5 10 20 50 100 \
   --output results/rtt_sweep_smollm.csv
@@ -85,6 +96,8 @@ python scripts/03_rtt_sweep.py \
 - `total_decode_time`
 
 注意：当前 full-prefix 学习版没有真正复用 KV cache，所以 speculative 路径里的 `prefill_time` 通常为 0；主要时间会落在 `draft_generate_time` 和 `target_verify_time`。等升级成 KV-cache 版本后，`prefill_time` 会变成实际 prompt prefill 成本。
+
+使用 `--implementation kv-cache` 时，`prefill_time` 会包含 target 和 draft 的 prompt cache 构建，后续每轮只把新增 token 喂给模型。这个版本更适合观察 RTT 从“有加速”逐步抵消收益的 break-even 点。
 
 ## 5. 分析 Break-even RTT
 
