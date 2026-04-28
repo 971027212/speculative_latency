@@ -476,18 +476,16 @@ def speculative_greedy_cached(
             output_ids = torch.cat([output_ids, new_tensor], dim=-1)
             attention_mask = torch.ones_like(output_ids)
 
-            # Rebuild caches from the accepted target path. This is deliberately
-            # conservative: it preserves exact greedy correctness while keeping
-            # target verification itself cache-aware. A later optimized version
-            # can replace this with careful incremental cache slicing/update.
             target_outputs = target_model(
-                output_ids,
+                new_tensor,
                 attention_mask=attention_mask,
+                past_key_values=target_past,
                 use_cache=True,
             )
             draft_outputs = draft_model(
-                output_ids,
+                new_tensor,
                 attention_mask=attention_mask,
+                past_key_values=draft_past,
                 use_cache=True,
             )
 
