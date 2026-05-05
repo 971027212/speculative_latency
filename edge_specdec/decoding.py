@@ -139,6 +139,45 @@ def _tokens_tensor(tokens: list[int], input_ids: torch.Tensor) -> torch.Tensor:
     return torch.tensor([tokens], dtype=input_ids.dtype, device=input_ids.device)
 
 
+def _past_seq_len(past_key_values: Any) -> int:
+    if past_key_values is None:
+        return 0
+    if hasattr(past_key_values, "get_seq_length"):
+        return int(past_key_values.get_seq_length())
+    if isinstance(past_key_values, (tuple, list)) and past_key_values:
+        first_layer = past_key_values[0]
+        if isinstance(first_layer, (tuple, list)) and first_layer:
+            return int(first_layer[0].shape[-2])
+    return 0
+
+
+def _cached_forward(model, input_ids: torch.Tensor, past_key_values: Any):
+    past_len = _past_seq_len(past_key_values)
+    sequence_len = input_ids.shape[-1]
+    attention_mask = input_ids.new_ones((input_ids.shape[0], past_len + sequence_len))
+    cache_position = torch.arange(
+        past_len,
+        past_len + sequence_len,
+        dtype=torch.long,
+        device=input_ids.device,
+    )
+    try:
+        return model(
+            input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            cache_position=cache_position,
+            use_cache=True,
+        )
+    except TypeError:
+        return model(
+            input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+        )
+
+
 @torch.inference_mode()
 def target_only_greedy(
     target_model,
@@ -388,6 +427,8 @@ def speculative_greedy_cached(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    min_draft_k: int | None = None,
+    max_draft_k: int | None = None,
 ) -> DecodeResult:
     """Greedy speculative decoding with KV cache.
 
@@ -402,6 +443,12 @@ def speculative_greedy_cached(
 
     if draft_k < 1:
         raise ValueError("draft_k must be >= 1")
+    adaptive_draft = min_draft_k is not None or max_draft_k is not None
+    if adaptive_draft:
+        min_draft_k = 1 if min_draft_k is None else min_draft_k
+        max_draft_k = draft_k if max_draft_k is None else max_draft_k
+        if min_draft_k < 1 or max_draft_k < min_draft_k:
+            raise ValueError("Require 1 <= min_draft_k <= max_draft_k")
 
     device = input_ids.device
     timings = DecodeTimings()
@@ -410,6 +457,8 @@ def speculative_greedy_cached(
     accepted_tokens = 0
     drafted_tokens = 0
     rounds = 0
+    current_k = max(min(draft_k, max_draft_k), min_draft_k) if adaptive_draft else draft_k
+    draft_k_history: list[int] = []
 
     _sync_if_cuda(device)
     total_start = time.perf_counter()
@@ -435,7 +484,9 @@ def speculative_greedy_cached(
     while output_ids.shape[-1] - prompt_len < max_new_tokens:
         rounds += 1
         remaining = max_new_tokens - (output_ids.shape[-1] - prompt_len)
-        this_k = min(draft_k, remaining)
+        this_k = min(current_k, remaining)
+        if adaptive_draft:
+            draft_k_history.append(this_k)
 
         draft_tokens: list[int] = []
         provisional_draft_past = draft_past
@@ -458,10 +509,10 @@ def speculative_greedy_cached(
                 break
 
             with timed_bucket(timings, "draft_generate_time", device):
-                draft_outputs = draft_model(
+                draft_outputs = _cached_forward(
+                    draft_model,
                     draft_next,
-                    past_key_values=provisional_draft_past,
-                    use_cache=True,
+                    provisional_draft_past,
                 )
             provisional_draft_past = draft_outputs.past_key_values
             provisional_draft_next_logits = draft_outputs.logits[:, -1, :]
@@ -475,16 +526,16 @@ def speculative_greedy_cached(
         )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
-        verify_input = torch.cat([output_ids, draft_tensor], dim=-1)
-        verify_start = output_ids.shape[-1]
         with timed_bucket(timings, "target_verify_time", device):
-            verify_logits = target_model(verify_input).logits
+            verify_outputs = _cached_forward(target_model, draft_tensor, target_past)
+        verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
-            target_tokens_for_draft = []
-            for i in range(len(draft_tokens)):
-                predict_pos = verify_start + i - 1
-                token = int(torch.argmax(verify_logits[:, predict_pos, :], dim=-1).item())
+            target_tokens_for_draft = [
+                int(torch.argmax(target_next_logits, dim=-1).item())
+            ]
+            for i in range(1, len(draft_tokens)):
+                token = int(torch.argmax(verify_logits[:, i - 1, :], dim=-1).item())
                 target_tokens_for_draft.append(token)
             bonus_token = int(torch.argmax(verify_logits[:, -1, :], dim=-1).item())
 
@@ -522,21 +573,19 @@ def speculative_greedy_cached(
             output_ids = torch.cat([output_ids, new_tensor], dim=-1)
             attention_mask = torch.ones_like(output_ids)
 
-            target_outputs = target_model(
-                new_tensor,
-                past_key_values=target_past,
-                use_cache=True,
-            )
-            draft_outputs = draft_model(
-                new_tensor,
-                past_key_values=draft_past,
-                use_cache=True,
-            )
+            target_outputs = _cached_forward(target_model, new_tensor, target_past)
+            draft_outputs = _cached_forward(draft_model, new_tensor, draft_past)
 
         target_past = target_outputs.past_key_values
         draft_past = draft_outputs.past_key_values
         target_next_logits = target_outputs.logits[:, -1, :]
         draft_next_logits = draft_outputs.logits[:, -1, :]
+
+        if adaptive_draft:
+            if accepted_this_round == len(draft_tokens):
+                current_k = min(current_k + 1, max_draft_k)
+            elif accepted_this_round <= max(1, len(draft_tokens) // 2):
+                current_k = max(current_k - 1, min_draft_k)
 
         if eos_token_id is not None and eos_token_id in new_tokens:
             break
@@ -550,6 +599,14 @@ def speculative_greedy_cached(
         accepted_tokens=accepted_tokens,
         drafted_tokens=drafted_tokens,
         rounds=rounds,
+        extra={
+            "draft_k_history": draft_k_history,
+            "mean_draft_k": sum(draft_k_history) / len(draft_k_history)
+            if draft_k_history
+            else 0.0,
+        }
+        if adaptive_draft
+        else {},
     )
 
 

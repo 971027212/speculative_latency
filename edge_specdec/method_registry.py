@@ -150,6 +150,20 @@ def run_dsd_adaptive(
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
+    if method_impl == "kv-cache":
+        return speculative_greedy_cached(
+            target_model,
+            draft_model,
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            draft_k=draft_k,
+            min_draft_k=1,
+            max_draft_k=max(draft_k * 2, draft_k),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+            eos_token_id=eos_token_id,
+        )
     return speculative_greedy_adaptive_draft(
         target_model,
         draft_model,
