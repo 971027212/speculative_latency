@@ -164,6 +164,21 @@ def _clone_past_key_values(past_key_values: Any) -> Any:
     return copy.deepcopy(past_key_values)
 
 
+def _crop_past_key_values(past_key_values: Any, seq_len: int) -> Any:
+    if past_key_values is None:
+        return None
+    if hasattr(past_key_values, "crop"):
+        result = past_key_values.crop(seq_len)
+        return past_key_values if result is None else result
+    if torch.is_tensor(past_key_values):
+        return past_key_values[..., :seq_len, :].contiguous()
+    if isinstance(past_key_values, tuple):
+        return tuple(_crop_past_key_values(item, seq_len) for item in past_key_values)
+    if isinstance(past_key_values, list):
+        return [_crop_past_key_values(item, seq_len) for item in past_key_values]
+    return past_key_values
+
+
 def _cached_forward(model, input_ids: torch.Tensor, past_key_values: Any):
     past_len = _past_seq_len(past_key_values)
     sequence_len = input_ids.shape[-1]
@@ -540,11 +555,7 @@ def speculative_greedy_cached(
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
         with timed_bucket(timings, "target_verify_time", device):
-            verify_outputs = _cached_forward(
-                target_model,
-                draft_tensor,
-                _clone_past_key_values(target_past),
-            )
+            verify_outputs = _cached_forward(target_model, draft_tensor, target_past)
         verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
@@ -585,18 +596,43 @@ def speculative_greedy_cached(
         if not new_tokens:
             new_tokens = [target_tokens_for_draft[0]]
 
-        new_tensor = _tokens_tensor(new_tokens, input_ids)
+        accepted_draft_count = min(accepted_this_round, len(new_tokens))
+        extra_tokens = new_tokens[accepted_draft_count:]
+        prefix_seq_len = output_ids.shape[-1]
+        committed_seq_len = prefix_seq_len + accepted_draft_count
         with timed_bucket(timings, "kv_or_input_update_time", device):
-            output_ids = torch.cat([output_ids, new_tensor], dim=-1)
+            output_ids = torch.cat([output_ids, _tokens_tensor(new_tokens, input_ids)], dim=-1)
             attention_mask = torch.ones_like(output_ids)
 
-            target_outputs = _cached_forward(target_model, new_tensor, target_past)
-            draft_outputs = _cached_forward(draft_model, new_tensor, draft_past)
+            target_past = _crop_past_key_values(
+                verify_outputs.past_key_values,
+                committed_seq_len,
+            )
 
-        target_past = target_outputs.past_key_values
-        draft_past = draft_outputs.past_key_values
-        target_next_logits = target_outputs.logits[:, -1, :]
-        draft_next_logits = draft_outputs.logits[:, -1, :]
+            draft_available_seq_len = _past_seq_len(provisional_draft_past)
+            draft_base_seq_len = min(committed_seq_len, draft_available_seq_len)
+            draft_past = _crop_past_key_values(provisional_draft_past, draft_base_seq_len)
+            draft_tokens_already_cached = max(0, draft_base_seq_len - prefix_seq_len)
+            draft_update_tokens = new_tokens[draft_tokens_already_cached:]
+
+            if extra_tokens:
+                extra_tensor = _tokens_tensor(extra_tokens, input_ids)
+                target_outputs = _cached_forward(target_model, extra_tensor, target_past)
+                target_past = target_outputs.past_key_values
+                target_next_logits = target_outputs.logits[:, -1, :]
+            elif accepted_draft_count > 0:
+                target_next_logits = verify_logits[:, accepted_draft_count - 1, :]
+
+            if draft_update_tokens:
+                draft_outputs = _cached_forward(
+                    draft_model,
+                    _tokens_tensor(draft_update_tokens, input_ids),
+                    draft_past,
+                )
+                draft_past = draft_outputs.past_key_values
+                draft_next_logits = draft_outputs.logits[:, -1, :]
+            elif accepted_draft_count > 0:
+                draft_next_logits = provisional_draft_next_logits
 
         if adaptive_draft:
             if accepted_this_round == len(draft_tokens):
