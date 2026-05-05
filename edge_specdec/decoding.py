@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import copy
 from dataclasses import dataclass, field
 import time
 from typing import Any
@@ -149,6 +150,18 @@ def _past_seq_len(past_key_values: Any) -> int:
         if isinstance(first_layer, (tuple, list)) and first_layer:
             return int(first_layer[0].shape[-2])
     return 0
+
+
+def _clone_past_key_values(past_key_values: Any) -> Any:
+    if past_key_values is None:
+        return None
+    if torch.is_tensor(past_key_values):
+        return past_key_values.clone()
+    if isinstance(past_key_values, tuple):
+        return tuple(_clone_past_key_values(item) for item in past_key_values)
+    if isinstance(past_key_values, list):
+        return [_clone_past_key_values(item) for item in past_key_values]
+    return copy.deepcopy(past_key_values)
 
 
 def _cached_forward(model, input_ids: torch.Tensor, past_key_values: Any):
@@ -489,7 +502,7 @@ def speculative_greedy_cached(
             draft_k_history.append(this_k)
 
         draft_tokens: list[int] = []
-        provisional_draft_past = draft_past
+        provisional_draft_past = _clone_past_key_values(draft_past)
         provisional_draft_next_logits = draft_next_logits
 
         for i in range(this_k):
@@ -527,7 +540,11 @@ def speculative_greedy_cached(
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
         with timed_bucket(timings, "target_verify_time", device):
-            verify_outputs = _cached_forward(target_model, draft_tensor, target_past)
+            verify_outputs = _cached_forward(
+                target_model,
+                draft_tensor,
+                _clone_past_key_values(target_past),
+            )
         verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
