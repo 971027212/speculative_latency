@@ -555,7 +555,11 @@ def speculative_greedy_cached(
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
         with timed_bucket(timings, "target_verify_time", device):
-            verify_outputs = _cached_forward(target_model, draft_tensor, target_past)
+            verify_outputs = _cached_forward(
+                target_model,
+                draft_tensor,
+                _clone_past_key_values(target_past),
+            )
         verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
