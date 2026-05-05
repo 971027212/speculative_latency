@@ -158,6 +158,51 @@ def main() -> None:
         )
     )
 
+    upload_display = summary[
+        [
+            "method_name",
+            "implementation",
+            "rtt_ms",
+            "method_time",
+            "upload_wait_time",
+            "speedup_vs_target_only",
+        ]
+    ].copy()
+    upload_display.insert(
+        1,
+        "method",
+        upload_display["method_name"] + " / " + upload_display["implementation"],
+    )
+    upload_display["upload_wait_share_percent"] = (
+        upload_display["upload_wait_time"]
+        / upload_display["method_time"].where(upload_display["method_time"] != 0, 1.0)
+        * 100.0
+    )
+    upload_display = upload_display[
+        [
+            "method",
+            "rtt_ms",
+            "method_time",
+            "upload_wait_time",
+            "upload_wait_share_percent",
+            "speedup_vs_target_only",
+        ]
+    ]
+
+    print("\n=== Upload wait summary ===")
+    print(
+        upload_display.to_string(
+            index=False,
+            formatters={
+                "rtt_ms": "{:.1f}".format,
+                "method_time": "{:.4f}".format,
+                "upload_wait_time": "{:.4f}".format,
+                "upload_wait_share_percent": "{:.2f}".format,
+                "speedup_vs_target_only": "{:.4f}".format,
+            },
+        )
+    )
+
     print(f"\nWrote summary to {summary_path}")
     print(f"Wrote stage shares to {share_path}")
     print(f"Wrote plot to {plot_path}")
