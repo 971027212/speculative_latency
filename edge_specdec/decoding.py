@@ -460,11 +460,6 @@ def speculative_greedy_cached(
             with timed_bucket(timings, "draft_generate_time", device):
                 draft_outputs = draft_model(
                     draft_next,
-                    attention_mask=torch.ones(
-                        (1, attention_mask.shape[-1] + i + 1),
-                        dtype=attention_mask.dtype,
-                        device=device,
-                    ),
                     past_key_values=provisional_draft_past,
                     use_cache=True,
                 )
@@ -483,11 +478,6 @@ def speculative_greedy_cached(
         with timed_bucket(timings, "target_verify_time", device):
             verify_outputs = target_model(
                 draft_tensor,
-                attention_mask=torch.ones(
-                    (1, attention_mask.shape[-1] + draft_tensor.shape[-1]),
-                    dtype=attention_mask.dtype,
-                    device=device,
-                ),
                 past_key_values=target_past,
                 use_cache=True,
             )
@@ -538,13 +528,11 @@ def speculative_greedy_cached(
 
             target_outputs = target_model(
                 new_tensor,
-                attention_mask=attention_mask,
                 past_key_values=target_past,
                 use_cache=True,
             )
             draft_outputs = draft_model(
                 new_tensor,
-                attention_mask=attention_mask,
                 past_key_values=draft_past,
                 use_cache=True,
             )
