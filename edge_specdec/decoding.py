@@ -475,20 +475,16 @@ def speculative_greedy_cached(
         )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
+        verify_input = torch.cat([output_ids, draft_tensor], dim=-1)
+        verify_start = output_ids.shape[-1]
         with timed_bucket(timings, "target_verify_time", device):
-            verify_outputs = target_model(
-                draft_tensor,
-                past_key_values=target_past,
-                use_cache=True,
-            )
-        verify_logits = verify_outputs.logits
+            verify_logits = target_model(verify_input).logits
 
         with timed_bucket(timings, "sampling_time", device):
-            target_tokens_for_draft = [
-                int(torch.argmax(target_next_logits, dim=-1).item())
-            ]
-            for i in range(1, len(draft_tokens)):
-                token = int(torch.argmax(verify_logits[:, i - 1, :], dim=-1).item())
+            target_tokens_for_draft = []
+            for i in range(len(draft_tokens)):
+                predict_pos = verify_start + i - 1
+                token = int(torch.argmax(verify_logits[:, predict_pos, :], dim=-1).item())
                 target_tokens_for_draft.append(token)
             bonus_token = int(torch.argmax(verify_logits[:, -1, :], dim=-1).item())
 
