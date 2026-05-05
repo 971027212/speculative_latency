@@ -54,6 +54,8 @@ def run_target_only(
     rtt_ms: float,
     eos_token_id: int | None,
     tree_width: int,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return target_only_greedy_cached(
@@ -80,6 +82,8 @@ def run_vanilla_spec(
     rtt_ms: float,
     eos_token_id: int | None,
     tree_width: int,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -89,6 +93,8 @@ def run_vanilla_spec(
             max_new_tokens=max_new_tokens,
             draft_k=draft_k,
             rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
             eos_token_id=eos_token_id,
         )
     return speculative_greedy(
@@ -98,6 +104,8 @@ def run_vanilla_spec(
         max_new_tokens=max_new_tokens,
         draft_k=draft_k,
         rtt_ms=rtt_ms,
+        upload_token_bytes=upload_token_bytes,
+        upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
     )
 
@@ -112,6 +120,8 @@ def run_specinfer(
     rtt_ms: float,
     eos_token_id: int | None,
     tree_width: int,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     return specinfer_tree_simplified(
         target_model,
@@ -121,6 +131,8 @@ def run_specinfer(
         draft_k=draft_k,
         tree_width=tree_width,
         rtt_ms=rtt_ms,
+        upload_token_bytes=upload_token_bytes,
+        upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
     )
 
@@ -135,6 +147,8 @@ def run_dsd_adaptive(
     rtt_ms: float,
     eos_token_id: int | None,
     tree_width: int,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     return speculative_greedy_adaptive_draft(
         target_model,
@@ -145,6 +159,8 @@ def run_dsd_adaptive(
         min_draft_k=1,
         max_draft_k=max(draft_k * 2, draft_k),
         rtt_ms=rtt_ms,
+        upload_token_bytes=upload_token_bytes,
+        upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
     )
 

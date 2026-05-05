@@ -20,6 +20,12 @@ TIME_COLUMNS = [
     "sampling_time",
 ]
 
+NETWORK_COLUMNS = [
+    "upload_latency_time",
+    "upload_transfer_time",
+    "upload_payload_bytes",
+]
+
 
 TIME_LABELS = {
     "prefill_time": "prefill",
@@ -106,6 +112,9 @@ def _write_markdown_report(
         "重点不只是看总耗时，而是把上传等待拆成三个更细指标：",
         "",
         "- `upload_wait_time`：累计上传等待时间。",
+        "- `upload_latency_time`：固定 RTT 或固定网络时延部分。",
+        "- `upload_transfer_time`：由 payload bytes（上传负载字节数）和 bandwidth（带宽）决定的传输时间。",
+        "- `upload_payload_bytes`：本轮实验累计上传的 draft token payload（草稿 token 负载）字节数。",
         "- `upload_wait_share_percent`：上传等待占整个方法耗时的比例。",
         "- `upload_wait_per_round_ms`：平均每轮 draft-to-target verification（草稿到目标验证）等待多少毫秒。",
         "- `upload_wait_per_generated_token_ms`：平均每生成一个 token 承担多少上传等待。",
@@ -154,6 +163,9 @@ def _write_markdown_report(
                 "rtt_ms",
                 "method_time",
                 "upload_wait_time",
+                "upload_latency_time",
+                "upload_transfer_time",
+                "upload_payload_bytes",
                 "upload_wait_share_percent",
                 "upload_wait_per_round_ms",
                 "upload_wait_per_generated_token_ms",
@@ -163,6 +175,9 @@ def _write_markdown_report(
                 "rtt_ms": "RTT(ms)",
                 "method_time": "time(s)",
                 "upload_wait_time": "upload wait(s)",
+                "upload_latency_time": "latency(s)",
+                "upload_transfer_time": "transfer(s)",
+                "upload_payload_bytes": "payload(bytes)",
                 "upload_wait_share_percent": "upload share(%)",
                 "upload_wait_per_round_ms": "upload/round(ms)",
                 "upload_wait_per_generated_token_ms": "upload/generated token(ms)",
@@ -227,19 +242,20 @@ def _write_markdown_report(
             "",
             "## 当前口径说明",
             "",
-            "当前 upload wait（上传等待）不是实际网络测速，而是每轮 draft tokens（草稿 token）生成完成后模拟一次固定 RTT 等待：",
+            "当前 upload wait（上传等待）不是实际网络测速，而是每轮 draft tokens（草稿 token）生成完成后模拟一次网络等待：",
             "",
             "```python",
-            "time.sleep(rtt_ms / 1000.0)",
+            "upload_time = rtt_ms / 1000 + payload_bytes * 8 / (bandwidth_mbps * 1_000_000)",
+            "time.sleep(upload_time)",
             "```",
             "",
-            "因此它回答的是“如果每轮端侧上传到云端验证需要等待固定 RTT，那么该等待占总解码时间多少”。它还没有建模 bandwidth（带宽）、payload bytes（上传字节数）、serialization（序列化）和 batching（批处理）等真实网络因素。",
+            "当 `upload_bandwidth_mbps <= 0` 时，只模拟固定 RTT，保持旧版实验口径；当 bandwidth（带宽）为正时，会额外加入 payload transfer time（负载传输时间）。它仍然没有建模 serialization（序列化）、协议头、拥塞和 batching（批处理）等真实网络因素。",
             "",
             "## 下一步计划",
             "",
             "1. 用 `--repeats 3` 或更高重复次数重跑实验，降低 quick run（快速实验）的随机波动。",
             "2. 验证 `--implementation kv-cache` 的 correctness（正确性），因为 break-even RTT（盈亏平衡 RTT）必须基于 KV cache 版本判断。",
-            "3. 下一版网络模型可以加入 `upload_time = fixed_latency + payload_bytes / bandwidth`，把 RTT 等待和真实 token payload（token 上传负载）区分开。",
+            "3. 使用不同 `--upload-bandwidth-mbps` 档位重跑实验，观察 bandwidth（带宽）是否会在低带宽下成为主要瓶颈。",
             "4. 对 SpecInfer-style token tree（SpecInfer 风格 token 树）进一步拆分 wasted branch tokens（无效分支 token）和实际 compute waste（计算浪费）。",
             "",
             "## 英文术语中文解释",
@@ -267,6 +283,13 @@ def _write_markdown_report(
 def main() -> None:
     args = parse_args()
     df = pd.read_csv(args.input)
+    for column in NETWORK_COLUMNS:
+        if column not in df.columns:
+            df[column] = 0.0
+    if "upload_token_bytes" not in df.columns:
+        df["upload_token_bytes"] = 0
+    if "upload_bandwidth_mbps" not in df.columns:
+        df["upload_bandwidth_mbps"] = 0.0
 
     if not df["matched_target_only"].all():
         bad = df.loc[
@@ -275,7 +298,14 @@ def main() -> None:
         ]
         raise ValueError(f"Some methods mismatched target-only:\n{bad}")
 
-    group_columns = ["method_name", "implementation", "model_pair", "rtt_ms"]
+    group_columns = [
+        "method_name",
+        "implementation",
+        "model_pair",
+        "rtt_ms",
+        "upload_token_bytes",
+        "upload_bandwidth_mbps",
+    ]
     summary = (
         df.groupby(group_columns, as_index=False)
         .agg(
@@ -288,6 +318,7 @@ def main() -> None:
             accepted_tokens=("accepted_tokens", "mean"),
             drafted_tokens=("drafted_tokens", "mean"),
             wasted_branch_time_or_tokens=("wasted_branch_time_or_tokens", "mean"),
+            **{column: (column, "mean") for column in NETWORK_COLUMNS},
             **{column: (column, "mean") for column in TIME_COLUMNS},
         )
         .sort_values(group_columns)
@@ -400,6 +431,11 @@ def main() -> None:
             "rounds",
             "generated_tokens",
             "upload_wait_time",
+            "upload_latency_time",
+            "upload_transfer_time",
+            "upload_payload_bytes",
+            "upload_token_bytes",
+            "upload_bandwidth_mbps",
             "speedup_vs_target_only",
         ]
     ].copy()
@@ -429,6 +465,11 @@ def main() -> None:
             "rtt_ms",
             "method_time",
             "upload_wait_time",
+            "upload_latency_time",
+            "upload_transfer_time",
+            "upload_payload_bytes",
+            "upload_token_bytes",
+            "upload_bandwidth_mbps",
             "upload_wait_share_percent",
             "upload_wait_per_round_ms",
             "upload_wait_per_generated_token_ms",
@@ -445,6 +486,11 @@ def main() -> None:
                 "rtt_ms": "{:.1f}".format,
                 "method_time": "{:.4f}".format,
                 "upload_wait_time": "{:.4f}".format,
+                "upload_latency_time": "{:.4f}".format,
+                "upload_transfer_time": "{:.6f}".format,
+                "upload_payload_bytes": "{:.0f}".format,
+                "upload_token_bytes": "{:.0f}".format,
+                "upload_bandwidth_mbps": "{:.3f}".format,
                 "upload_wait_share_percent": "{:.2f}".format,
                 "upload_wait_per_round_ms": "{:.2f}".format,
                 "upload_wait_per_generated_token_ms": "{:.2f}".format,

@@ -21,6 +21,9 @@ TIME_FIELDS = [
     "draft_generate_time",
     "draft_structure_time",
     "upload_wait_time",
+    "upload_latency_time",
+    "upload_transfer_time",
+    "upload_payload_bytes",
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
@@ -39,6 +42,8 @@ FIELDNAMES = [
     "prompt_id",
     "repeat",
     "rtt_ms",
+    "upload_token_bytes",
+    "upload_bandwidth_mbps",
     "max_new_tokens",
     "draft_k",
     "tree_width",
@@ -79,6 +84,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--draft-k", type=int, default=4)
     parser.add_argument("--tree-width", type=int, default=2)
     parser.add_argument("--rtt-ms", type=float, nargs="+", default=[0, 5, 10, 20, 50, 100])
+    parser.add_argument(
+        "--upload-token-bytes",
+        type=int,
+        default=4,
+        help="Payload bytes per draft token id for upload simulation.",
+    )
+    parser.add_argument(
+        "--upload-bandwidth-mbps",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional upload bandwidth in Mbps. If <= 0, only fixed RTT is "
+            "simulated, matching the original behavior."
+        ),
+    )
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--dtype", default="float16", choices=["auto", "float16", "bfloat16", "float32"])
@@ -107,6 +127,8 @@ def run_one(
     rtt_ms: float,
     eos_token_id: int | None,
     tree_width: int,
+    upload_token_bytes: int,
+    upload_bandwidth_mbps: float,
 ):
     runner = RUNNERS[method_name]
     return runner(
@@ -119,6 +141,8 @@ def run_one(
         rtt_ms,
         eos_token_id,
         tree_width,
+        upload_token_bytes,
+        upload_bandwidth_mbps,
     )
 
 
@@ -165,6 +189,8 @@ def main() -> None:
                             0.0,
                             tokenizer.eos_token_id,
                             args.tree_width,
+                            args.upload_token_bytes,
+                            args.upload_bandwidth_mbps,
                         )
 
             work = [
@@ -195,6 +221,8 @@ def main() -> None:
                         0.0,
                         tokenizer.eos_token_id,
                         args.tree_width,
+                        args.upload_token_bytes,
+                        args.upload_bandwidth_mbps,
                     )
                 baseline = baseline_cache[baseline_key]
 
@@ -212,6 +240,8 @@ def main() -> None:
                         rtt_ms,
                         tokenizer.eos_token_id,
                         args.tree_width,
+                        args.upload_token_bytes,
+                        args.upload_bandwidth_mbps,
                     )
 
                 matched = baseline.output_ids == result.output_ids
@@ -225,6 +255,8 @@ def main() -> None:
                     "prompt_id": prompt_id,
                     "repeat": repeat,
                     "rtt_ms": rtt_ms,
+                    "upload_token_bytes": args.upload_token_bytes,
+                    "upload_bandwidth_mbps": args.upload_bandwidth_mbps,
                     "max_new_tokens": args.max_new_tokens,
                     "draft_k": args.draft_k,
                     "tree_width": args.tree_width,

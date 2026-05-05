@@ -13,6 +13,9 @@ TIME_BUCKETS = [
     "draft_generate_time",
     "draft_structure_time",
     "upload_wait_time",
+    "upload_latency_time",
+    "upload_transfer_time",
+    "upload_payload_bytes",
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
@@ -32,6 +35,9 @@ class DecodeTimings:
     draft_generate_time: float = 0.0
     draft_structure_time: float = 0.0
     upload_wait_time: float = 0.0
+    upload_latency_time: float = 0.0
+    upload_transfer_time: float = 0.0
+    upload_payload_bytes: float = 0.0
     target_verify_time: float = 0.0
     posterior_accept_time: float = 0.0
     cache_update_time: float = 0.0
@@ -51,6 +57,9 @@ class DecodeTimings:
             "draft_generate_time": self.draft_generate_time,
             "draft_structure_time": self.draft_structure_time,
             "upload_wait_time": self.upload_wait_time,
+            "upload_latency_time": self.upload_latency_time,
+            "upload_transfer_time": self.upload_transfer_time,
+            "upload_payload_bytes": self.upload_payload_bytes,
             "target_verify_time": self.target_verify_time,
             "posterior_accept_time": self.posterior_accept_time,
             "cache_update_time": self.cache_update_time,
@@ -68,6 +77,37 @@ def timed_bucket(timings: DecodeTimings, bucket: str, device: torch.device):
     yield
     _sync_if_cuda(device)
     timings.add(bucket, time.perf_counter() - start)
+
+
+def simulate_upload_wait(
+    timings: DecodeTimings,
+    draft_token_count: int,
+    rtt_ms: float,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
+) -> None:
+    """Simulate edge-to-cloud upload wait for draft tokens.
+
+    rtt_ms models fixed per-round latency. upload_bandwidth_mbps optionally
+    adds payload transfer time from token ids. A non-positive bandwidth keeps
+    the old fixed-RTT behavior while still recording payload size.
+    """
+
+    payload_bytes = max(0, draft_token_count) * max(0, upload_token_bytes)
+    latency_seconds = max(0.0, rtt_ms) / 1000.0
+    transfer_seconds = 0.0
+    if upload_bandwidth_mbps > 0 and payload_bytes > 0:
+        transfer_seconds = (payload_bytes * 8.0) / (upload_bandwidth_mbps * 1_000_000.0)
+
+    timings.upload_payload_bytes += float(payload_bytes)
+    timings.upload_latency_time += latency_seconds
+    timings.upload_transfer_time += transfer_seconds
+
+    wait_seconds = latency_seconds + transfer_seconds
+    if wait_seconds > 0:
+        start = time.perf_counter()
+        time.sleep(wait_seconds)
+        timings.upload_wait_time += time.perf_counter() - start
 
 
 @dataclass
@@ -214,6 +254,8 @@ def speculative_greedy(
     draft_k: int = 4,
     rtt_ms: float = 0.0,
     eos_token_id: int | None = None,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     """Minimal greedy speculative decoding.
 
@@ -255,10 +297,13 @@ def speculative_greedy(
             if eos_token_id is not None and token_id == eos_token_id:
                 break
 
-        if rtt_ms > 0:
-            start = time.perf_counter()
-            time.sleep(rtt_ms / 1000.0)
-            timings.upload_wait_time += time.perf_counter() - start
+        simulate_upload_wait(
+            timings,
+            draft_token_count=len(draft_tokens),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+        )
 
         draft_tensor = torch.tensor([draft_tokens], dtype=input_ids.dtype, device=device)
         verify_input = torch.cat([output_ids, draft_tensor], dim=-1)
@@ -341,6 +386,8 @@ def speculative_greedy_cached(
     draft_k: int = 4,
     rtt_ms: float = 0.0,
     eos_token_id: int | None = None,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     """Greedy speculative decoding with KV cache.
 
@@ -424,10 +471,13 @@ def speculative_greedy_cached(
             provisional_draft_past = draft_outputs.past_key_values
             provisional_draft_next_logits = draft_outputs.logits[:, -1, :]
 
-        if rtt_ms > 0:
-            start = time.perf_counter()
-            time.sleep(rtt_ms / 1000.0)
-            timings.upload_wait_time += time.perf_counter() - start
+        simulate_upload_wait(
+            timings,
+            draft_token_count=len(draft_tokens),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+        )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
         with timed_bucket(timings, "target_verify_time", device):
@@ -530,6 +580,8 @@ def speculative_greedy_adaptive_draft(
     max_draft_k: int = 8,
     rtt_ms: float = 0.0,
     eos_token_id: int | None = None,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     """Lossless speculative decoding with adaptive draft length.
 
@@ -574,10 +626,13 @@ def speculative_greedy_adaptive_draft(
             if eos_token_id is not None and token_id == eos_token_id:
                 break
 
-        if rtt_ms > 0:
-            start = time.perf_counter()
-            time.sleep(rtt_ms / 1000.0)
-            timings.upload_wait_time += time.perf_counter() - start
+        simulate_upload_wait(
+            timings,
+            draft_token_count=len(draft_tokens),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+        )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
         verify_input = torch.cat([output_ids, draft_tensor], dim=-1)
@@ -662,6 +717,8 @@ def specinfer_tree_simplified(
     tree_width: int = 2,
     rtt_ms: float = 0.0,
     eos_token_id: int | None = None,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     """Simplified SpecInfer-style tree draft and batched verification.
 
@@ -719,10 +776,13 @@ def specinfer_tree_simplified(
 
         drafted_tokens += sum(len(path) for path in candidate_paths)
 
-        if rtt_ms > 0:
-            start = time.perf_counter()
-            time.sleep(rtt_ms / 1000.0)
-            timings.upload_wait_time += time.perf_counter() - start
+        simulate_upload_wait(
+            timings,
+            draft_token_count=sum(len(path) for path in candidate_paths),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+        )
 
         max_path_len = max(len(path) for path in candidate_paths)
         padded_paths = [
