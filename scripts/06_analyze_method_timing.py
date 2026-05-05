@@ -20,14 +20,14 @@ TIME_COLUMNS = [
 
 
 TIME_LABELS = {
-    "prefill_time": "prefill（预填充）",
-    "draft_generate_time": "draft（草稿生成）",
-    "draft_structure_time": "structure（结构构建）",
-    "upload_wait_time": "upload（上传等待）",
-    "target_verify_time": "verify（目标验证）",
-    "posterior_accept_time": "accept（后验接受）",
-    "cache_update_time": "cache（缓存更新）",
-    "sampling_time": "sampling（采样/argmax）",
+    "prefill_time": "prefill",
+    "draft_generate_time": "draft generation",
+    "draft_structure_time": "draft structure",
+    "upload_wait_time": "upload wait",
+    "target_verify_time": "target verification",
+    "posterior_accept_time": "posterior accept",
+    "cache_update_time": "cache update",
+    "sampling_time": "sampling / argmax",
 }
 
 
@@ -109,7 +109,7 @@ def main() -> None:
         ax.bar(labels, values, bottom=bottoms, label=TIME_LABELS[column])
         bottoms = [left + right for left, right in zip(bottoms, values)]
 
-    ax.set_ylabel("Share of method time（阶段时间占比）")
+    ax.set_ylabel("Share of method time")
     ax.set_title(f"Stage time shares at RTT={args.plot_rtt_ms} ms")
     ax.set_ylim(0, 1.0)
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
@@ -132,6 +132,32 @@ def main() -> None:
             ]
         ].to_string(index=False)
     )
+
+    share_display = shares[shares["rtt_ms"] == args.plot_rtt_ms].copy()
+    share_display.insert(
+        1,
+        "method",
+        share_display["method_name"] + " / " + share_display["implementation"],
+    )
+    share_display = share_display[
+        ["method"] + [f"{column}_share" for column in TIME_COLUMNS]
+    ]
+    share_display = share_display.rename(
+        columns={f"{column}_share": TIME_LABELS[column] for column in TIME_COLUMNS}
+    )
+    for column in TIME_COLUMNS:
+        share_display[TIME_LABELS[column]] = share_display[TIME_LABELS[column]] * 100.0
+
+    print(f"\n=== Stage time shares at RTT={args.plot_rtt_ms} ms (%) ===")
+    print(
+        share_display.to_string(
+            index=False,
+            formatters={
+                TIME_LABELS[column]: "{:.2f}".format for column in TIME_COLUMNS
+            },
+        )
+    )
+
     print(f"\nWrote summary to {summary_path}")
     print(f"Wrote stage shares to {share_path}")
     print(f"Wrote plot to {plot_path}")
