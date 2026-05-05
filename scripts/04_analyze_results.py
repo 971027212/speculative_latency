@@ -9,11 +9,14 @@ import pandas as pd
 TIME_COLUMNS = [
     "prefill_time",
     "draft_generate_time",
+    "draft_structure_time",
     "upload_wait_time",
     "target_verify_time",
     "posterior_accept_time",
+    "cache_update_time",
     "kv_or_input_update_time",
     "sampling_time",
+    "wasted_branch_time_or_tokens",
     "total_decode_time",
 ]
 

@@ -116,3 +116,54 @@ python scripts/04_analyze_results.py \
 ## 重要说明
 
 这一版是 correctness-first 的学习实现，不是最快实现。因为没有复用 KV cache，绝对速度不会代表工业实现；但 RTT 注入对总时延和 speedup 的影响趋势仍然可以先被观察出来。下一步可以把 `edge_specdec/decoding.py` 升级成 cache-aware 版本，再比较 full-prefix 和 KV-cache 两种实现下的 break-even RTT。
+
+## 6. 方法阶段时间占比实验
+
+新主线是比较不同方法的阶段时间占比。第一阶段包含：
+
+- `target-only`：target-only greedy decoding（只用目标模型的贪心解码）
+- `vanilla-spec`：vanilla speculative decoding（普通线性推测解码）
+- `specinfer-simplified`：simplified SpecInfer token tree（简化 SpecInfer token 树）
+- `dsd-adaptive-draft`：DSD-style adaptive draft strategy（DSD 风格自适应草稿策略）
+
+先跑一个快速实验：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/05_method_timing_experiment.py \
+  --pair smollm-local \
+  --implementation full-prefix \
+  --max-new-tokens 32 \
+  --draft-k 4 \
+  --tree-width 2 \
+  --repeats 1 \
+  --warmups 1 \
+  --rtt-ms 0 20 100 \
+  --output results/method_timing_quick.csv
+```
+
+分析并生成阶段占比表和图：
+
+```bash
+python scripts/06_analyze_method_timing.py \
+  --input results/method_timing_quick.csv \
+  --summary-output results/method_timing_summary_quick.csv \
+  --share-output results/method_timing_stage_shares_quick.csv \
+  --plot-output results/method_timing_stage_shares_quick.png \
+  --plot-rtt-ms 0
+```
+
+原始结果每一行表示一次方法运行，包含统一字段：
+
+- `method_name`：method name（方法名）
+- `implementation`：implementation type（实现类型）
+- `prefill_time`：prefill time（预填充时间）
+- `draft_generate_time`：draft generation time（草稿生成时间）
+- `draft_structure_time`：draft structure construction time（草稿结构构建时间）
+- `upload_wait_time`：upload wait time（上传等待时间）
+- `target_verify_time`：target verification time（目标模型验证时间）
+- `posterior_accept_time`：posterior acceptance time（后验接受时间）
+- `cache_update_time`：cache update time（缓存更新时间）
+- `sampling_time`：sampling/argmax time（采样或 argmax 时间）
+- `wasted_branch_time_or_tokens`：wasted branch tokens/cost（无效分支 token 或成本）
+
+阶段性组会材料统一放在 `reports/`。

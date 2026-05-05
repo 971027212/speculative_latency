@@ -11,11 +11,13 @@ import torch
 TIME_BUCKETS = [
     "prefill_time",
     "draft_generate_time",
+    "draft_structure_time",
     "upload_wait_time",
     "target_verify_time",
     "posterior_accept_time",
-    "kv_or_input_update_time",
+    "cache_update_time",
     "sampling_time",
+    "wasted_branch_time_or_tokens",
 ]
 
 
@@ -28,25 +30,33 @@ def _sync_if_cuda(device: torch.device) -> None:
 class DecodeTimings:
     prefill_time: float = 0.0
     draft_generate_time: float = 0.0
+    draft_structure_time: float = 0.0
     upload_wait_time: float = 0.0
     target_verify_time: float = 0.0
     posterior_accept_time: float = 0.0
+    cache_update_time: float = 0.0
     kv_or_input_update_time: float = 0.0
     sampling_time: float = 0.0
+    wasted_branch_time_or_tokens: float = 0.0
     total_decode_time: float = 0.0
 
     def add(self, bucket: str, seconds: float) -> None:
+        if bucket == "kv_or_input_update_time":
+            self.cache_update_time += seconds
         setattr(self, bucket, getattr(self, bucket) + seconds)
 
     def as_dict(self) -> dict[str, float]:
         return {
             "prefill_time": self.prefill_time,
             "draft_generate_time": self.draft_generate_time,
+            "draft_structure_time": self.draft_structure_time,
             "upload_wait_time": self.upload_wait_time,
             "target_verify_time": self.target_verify_time,
             "posterior_accept_time": self.posterior_accept_time,
+            "cache_update_time": self.cache_update_time,
             "kv_or_input_update_time": self.kv_or_input_update_time,
             "sampling_time": self.sampling_time,
+            "wasted_branch_time_or_tokens": self.wasted_branch_time_or_tokens,
             "total_decode_time": self.total_decode_time,
         }
 
@@ -506,4 +516,284 @@ def speculative_greedy_cached(
         accepted_tokens=accepted_tokens,
         drafted_tokens=drafted_tokens,
         rounds=rounds,
+    )
+
+
+@torch.inference_mode()
+def speculative_greedy_adaptive_draft(
+    target_model,
+    draft_model,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    draft_k: int = 4,
+    min_draft_k: int = 1,
+    max_draft_k: int = 8,
+    rtt_ms: float = 0.0,
+    eos_token_id: int | None = None,
+) -> DecodeResult:
+    """Lossless speculative decoding with adaptive draft length.
+
+    This is the first DSD-style draft strategy baseline. DSD here means
+    draft model design/usage strategy, not a new target verification rule.
+    """
+
+    if min_draft_k < 1 or max_draft_k < min_draft_k:
+        raise ValueError("Require 1 <= min_draft_k <= max_draft_k")
+
+    device = input_ids.device
+    timings = DecodeTimings()
+    output_ids = input_ids.clone()
+    prompt_len = output_ids.shape[-1]
+    accepted_tokens = 0
+    drafted_tokens = 0
+    rounds = 0
+    current_k = max(min(draft_k, max_draft_k), min_draft_k)
+    draft_k_history: list[int] = []
+
+    _sync_if_cuda(device)
+    total_start = time.perf_counter()
+
+    while output_ids.shape[-1] - prompt_len < max_new_tokens:
+        rounds += 1
+        remaining = max_new_tokens - (output_ids.shape[-1] - prompt_len)
+        this_k = min(current_k, remaining)
+        draft_k_history.append(this_k)
+
+        draft_tokens: list[int] = []
+        draft_prefix = output_ids.clone()
+        for _ in range(this_k):
+            with timed_bucket(timings, "draft_generate_time", device):
+                draft_logits = draft_model(draft_prefix).logits
+            with timed_bucket(timings, "sampling_time", device):
+                draft_next = _argmax_next_token(draft_logits)
+            token_id = int(draft_next.item())
+            draft_tokens.append(token_id)
+            drafted_tokens += 1
+            with timed_bucket(timings, "kv_or_input_update_time", device):
+                draft_prefix = _append_token(draft_prefix, draft_next)
+            if eos_token_id is not None and token_id == eos_token_id:
+                break
+
+        if rtt_ms > 0:
+            start = time.perf_counter()
+            time.sleep(rtt_ms / 1000.0)
+            timings.upload_wait_time += time.perf_counter() - start
+
+        draft_tensor = _tokens_tensor(draft_tokens, input_ids)
+        verify_input = torch.cat([output_ids, draft_tensor], dim=-1)
+        verify_start = output_ids.shape[-1]
+
+        with timed_bucket(timings, "target_verify_time", device):
+            target_logits = target_model(verify_input).logits
+
+        with timed_bucket(timings, "sampling_time", device):
+            target_tokens_for_draft = []
+            for i in range(len(draft_tokens)):
+                predict_pos = verify_start + i - 1
+                token = int(torch.argmax(target_logits[:, predict_pos, :], dim=-1).item())
+                target_tokens_for_draft.append(token)
+            bonus_token = int(torch.argmax(target_logits[:, -1, :], dim=-1).item())
+
+        with timed_bucket(timings, "posterior_accept_time", device):
+            accepted_this_round = 0
+            replacement_token: int | None = None
+            for draft_token, target_token in zip(draft_tokens, target_tokens_for_draft):
+                if draft_token == target_token:
+                    accepted_this_round += 1
+                    if eos_token_id is not None and draft_token == eos_token_id:
+                        break
+                else:
+                    replacement_token = target_token
+                    break
+
+        new_tokens = draft_tokens[:accepted_this_round]
+        accepted_tokens += accepted_this_round
+
+        generated_so_far = output_ids.shape[-1] - prompt_len
+        can_add_more = generated_so_far + len(new_tokens) < max_new_tokens
+        hit_eos = eos_token_id is not None and eos_token_id in new_tokens
+
+        if can_add_more and not hit_eos:
+            if replacement_token is not None:
+                new_tokens.append(replacement_token)
+            elif accepted_this_round == len(draft_tokens):
+                new_tokens.append(bonus_token)
+
+        new_tokens = new_tokens[: max_new_tokens - generated_so_far]
+        if not new_tokens:
+            new_tokens = [target_tokens_for_draft[0]]
+
+        with timed_bucket(timings, "kv_or_input_update_time", device):
+            output_ids = torch.cat([output_ids, _tokens_tensor(new_tokens, input_ids)], dim=-1)
+
+        if accepted_this_round == len(draft_tokens):
+            current_k = min(current_k + 1, max_draft_k)
+        elif accepted_this_round <= max(1, len(draft_tokens) // 2):
+            current_k = max(current_k - 1, min_draft_k)
+
+        if eos_token_id is not None and eos_token_id in new_tokens:
+            break
+
+    _sync_if_cuda(device)
+    timings.total_decode_time = time.perf_counter() - total_start
+    return DecodeResult(
+        output_ids=output_ids.squeeze(0).tolist(),
+        timings=timings,
+        generated_tokens=output_ids.shape[-1] - prompt_len,
+        accepted_tokens=accepted_tokens,
+        drafted_tokens=drafted_tokens,
+        rounds=rounds,
+        extra={
+            "draft_k_history": draft_k_history,
+            "mean_draft_k": sum(draft_k_history) / len(draft_k_history)
+            if draft_k_history
+            else 0.0,
+        },
+    )
+
+
+@torch.inference_mode()
+def specinfer_tree_simplified(
+    target_model,
+    draft_model,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    draft_k: int = 4,
+    tree_width: int = 2,
+    rtt_ms: float = 0.0,
+    eos_token_id: int | None = None,
+) -> DecodeResult:
+    """Simplified SpecInfer-style tree draft and batched verification.
+
+    This is not a full SpecInfer serving-system reproduction. It builds a small
+    token tree by taking top candidates for the first draft token and greedily
+    extending each branch, then verifies the candidate paths in one target batch.
+    The accepted path is still lossless because output tokens follow target
+    greedy posterior acceptance.
+    """
+
+    if draft_k < 1 or tree_width < 1:
+        raise ValueError("Require draft_k >= 1 and tree_width >= 1")
+
+    device = input_ids.device
+    timings = DecodeTimings()
+    output_ids = input_ids.clone()
+    prompt_len = output_ids.shape[-1]
+    accepted_tokens = 0
+    drafted_tokens = 0
+    wasted_branch_tokens = 0
+    rounds = 0
+
+    _sync_if_cuda(device)
+    total_start = time.perf_counter()
+
+    while output_ids.shape[-1] - prompt_len < max_new_tokens:
+        rounds += 1
+        remaining = max_new_tokens - (output_ids.shape[-1] - prompt_len)
+        this_k = min(draft_k, remaining)
+
+        with timed_bucket(timings, "draft_generate_time", device):
+            root_logits = draft_model(output_ids).logits
+        with timed_bucket(timings, "sampling_time", device):
+            top_tokens = torch.topk(root_logits[:, -1, :], k=tree_width, dim=-1).indices
+
+        with timed_bucket(timings, "draft_structure_time", device):
+            candidate_paths = [[int(top_tokens[0, i].item())] for i in range(tree_width)]
+
+        for branch_idx in range(tree_width):
+            branch_prefix = torch.cat(
+                [output_ids, _tokens_tensor(candidate_paths[branch_idx], input_ids)],
+                dim=-1,
+            )
+            while len(candidate_paths[branch_idx]) < this_k:
+                with timed_bucket(timings, "draft_generate_time", device):
+                    logits = draft_model(branch_prefix).logits
+                with timed_bucket(timings, "sampling_time", device):
+                    next_token = _argmax_next_token(logits)
+                token_id = int(next_token.item())
+                with timed_bucket(timings, "draft_structure_time", device):
+                    candidate_paths[branch_idx].append(token_id)
+                branch_prefix = _append_token(branch_prefix, next_token)
+                if eos_token_id is not None and token_id == eos_token_id:
+                    break
+
+        drafted_tokens += sum(len(path) for path in candidate_paths)
+
+        if rtt_ms > 0:
+            start = time.perf_counter()
+            time.sleep(rtt_ms / 1000.0)
+            timings.upload_wait_time += time.perf_counter() - start
+
+        max_path_len = max(len(path) for path in candidate_paths)
+        padded_paths = [
+            path + [path[-1]] * (max_path_len - len(path)) for path in candidate_paths
+        ]
+        path_tensor = torch.tensor(padded_paths, dtype=input_ids.dtype, device=device)
+        batched_prefix = output_ids.repeat(len(candidate_paths), 1)
+        verify_input = torch.cat([batched_prefix, path_tensor], dim=-1)
+        verify_start = output_ids.shape[-1]
+
+        with timed_bucket(timings, "target_verify_time", device):
+            target_logits = target_model(verify_input).logits
+
+        main_path = candidate_paths[0]
+        with timed_bucket(timings, "sampling_time", device):
+            target_tokens_for_main = []
+            for i in range(len(main_path)):
+                predict_pos = verify_start + i - 1
+                token = int(torch.argmax(target_logits[0:1, predict_pos, :], dim=-1).item())
+                target_tokens_for_main.append(token)
+            bonus_token = int(torch.argmax(target_logits[0:1, verify_start + len(main_path) - 1, :], dim=-1).item())
+
+        with timed_bucket(timings, "posterior_accept_time", device):
+            accepted_this_round = 0
+            replacement_token: int | None = None
+            for draft_token, target_token in zip(main_path, target_tokens_for_main):
+                if draft_token == target_token:
+                    accepted_this_round += 1
+                    if eos_token_id is not None and draft_token == eos_token_id:
+                        break
+                else:
+                    replacement_token = target_token
+                    break
+
+        new_tokens = main_path[:accepted_this_round]
+        accepted_tokens += accepted_this_round
+        generated_so_far = output_ids.shape[-1] - prompt_len
+        can_add_more = generated_so_far + len(new_tokens) < max_new_tokens
+        hit_eos = eos_token_id is not None and eos_token_id in new_tokens
+
+        if can_add_more and not hit_eos:
+            if replacement_token is not None:
+                new_tokens.append(replacement_token)
+            elif accepted_this_round == len(main_path):
+                new_tokens.append(bonus_token)
+
+        new_tokens = new_tokens[: max_new_tokens - generated_so_far]
+        if not new_tokens:
+            new_tokens = [target_tokens_for_main[0]]
+
+        wasted_this_round = sum(len(path) for path in candidate_paths) - accepted_this_round
+        wasted_branch_tokens += wasted_this_round
+        timings.wasted_branch_time_or_tokens += float(wasted_this_round)
+
+        with timed_bucket(timings, "kv_or_input_update_time", device):
+            output_ids = torch.cat([output_ids, _tokens_tensor(new_tokens, input_ids)], dim=-1)
+
+        if eos_token_id is not None and eos_token_id in new_tokens:
+            break
+
+    _sync_if_cuda(device)
+    timings.total_decode_time = time.perf_counter() - total_start
+    return DecodeResult(
+        output_ids=output_ids.squeeze(0).tolist(),
+        timings=timings,
+        generated_tokens=output_ids.shape[-1] - prompt_len,
+        accepted_tokens=accepted_tokens,
+        drafted_tokens=drafted_tokens,
+        rounds=rounds,
+        extra={
+            "tree_width": tree_width,
+            "wasted_branch_tokens": wasted_branch_tokens,
+        },
     )
