@@ -777,32 +777,27 @@ def speculative_greedy_cached(
         if not new_tokens:
             new_tokens = [target_tokens_for_draft[0]]
 
-        accepted_draft_count = min(accepted_this_round, len(new_tokens))
-        extra_tokens = new_tokens[accepted_draft_count:]
         new_tensor = _tokens_tensor(new_tokens, input_ids)
-        can_reuse_verified_target = accepted_this_round == len(draft_tokens)
         with timed_bucket(timings, "kv_or_input_update_time", device):
             output_ids = torch.cat([output_ids, new_tensor], dim=-1)
             attention_mask = torch.ones_like(output_ids)
 
-            if can_reuse_verified_target:
-                target_past = verify_past_after_draft
-                if extra_tokens:
-                    target_outputs = _cached_forward(
-                        target_model,
-                        _tokens_tensor(extra_tokens, input_ids),
-                        target_past,
-                    )
-                    target_past = target_outputs.past_key_values
-                    target_next_logits = target_outputs.logits[:, -1, :]
-                else:
-                    target_next_logits = bonus_logits
-            else:
-                target_outputs = _cached_forward(target_model, new_tensor, target_past)
-                target_past = target_outputs.past_key_values
-                target_next_logits = target_outputs.logits[:, -1, :]
-
-            draft_outputs = _cached_forward(draft_model, new_tensor, draft_past)
+            # Rebuild both caches from the accepted output prefix. Some cache
+            # implementations mutate cache objects in place during provisional
+            # draft/verify forwards; a full rebuild keeps the next round tied
+            # to the exact emitted token sequence.
+            target_outputs = target_model(
+                output_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
+            target_past = target_outputs.past_key_values
+            target_next_logits = target_outputs.logits[:, -1, :]
+            draft_outputs = draft_model(
+                output_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
             draft_past = draft_outputs.past_key_values
             draft_next_logits = draft_outputs.logits[:, -1, :]
 
@@ -830,9 +825,13 @@ def speculative_greedy_cached(
             if draft_k_history
             else 0.0,
             "target_verify_mode": target_verify_mode,
+            "state_update_mode": "full_recompute",
         }
         if adaptive_draft
-        else {"target_verify_mode": target_verify_mode},
+        else {
+            "target_verify_mode": target_verify_mode,
+            "state_update_mode": "full_recompute",
+        },
     )
 
 
