@@ -312,6 +312,21 @@ def _cached_forward(model, input_ids: torch.Tensor, past_key_values: Any):
         )
 
 
+def _cached_forward_target_only_step(
+    model,
+    token: torch.Tensor,
+    past_key_values: Any,
+    total_seq_len: int,
+):
+    attention_mask = token.new_ones((token.shape[0], total_seq_len))
+    return model(
+        token,
+        attention_mask=attention_mask,
+        past_key_values=past_key_values,
+        use_cache=True,
+    )
+
+
 def _cached_verify_sequential(
     target_model,
     draft_tokens: list[int],
@@ -324,12 +339,14 @@ def _cached_verify_sequential(
     verify_past = _clone_past_key_values(target_past)
     next_logits = target_next_logits
     logits_for_draft: list[torch.Tensor] = []
-    for token_id in draft_tokens:
+    prefix_len = _past_seq_len(target_past)
+    for index, token_id in enumerate(draft_tokens):
         logits_for_draft.append(next_logits)
-        outputs = _cached_forward(
+        outputs = _cached_forward_target_only_step(
             target_model,
             _tokens_tensor([token_id], input_ids),
             verify_past,
+            prefix_len + index + 1,
         )
         verify_past = outputs.past_key_values
         next_logits = outputs.logits[:, -1, :]
@@ -782,17 +799,16 @@ def speculative_greedy_cached(
             output_ids = torch.cat([output_ids, new_tensor], dim=-1)
             attention_mask = torch.ones_like(output_ids)
 
-            # Rebuild both caches from the accepted output prefix. Some cache
-            # implementations mutate cache objects in place during provisional
-            # draft/verify forwards; a full rebuild keeps the next round tied
-            # to the exact emitted token sequence.
-            target_outputs = target_model(
-                output_ids,
-                attention_mask=attention_mask,
-                use_cache=True,
-            )
-            target_past = target_outputs.past_key_values
-            target_next_logits = target_outputs.logits[:, -1, :]
+            previous_len = output_ids.shape[-1] - len(new_tokens)
+            for index, token_id in enumerate(new_tokens):
+                target_outputs = _cached_forward_target_only_step(
+                    target_model,
+                    _tokens_tensor([token_id], input_ids),
+                    target_past,
+                    previous_len + index + 1,
+                )
+                target_past = target_outputs.past_key_values
+                target_next_logits = target_outputs.logits[:, -1, :]
             draft_outputs = draft_model(
                 output_ids,
                 attention_mask=attention_mask,
@@ -825,12 +841,12 @@ def speculative_greedy_cached(
             if draft_k_history
             else 0.0,
             "target_verify_mode": target_verify_mode,
-            "state_update_mode": "full_recompute",
+            "state_update_mode": "target_only_step",
         }
         if adaptive_draft
         else {
             "target_verify_mode": target_verify_mode,
-            "state_update_mode": "full_recompute",
+            "state_update_mode": "target_only_step",
         },
     )
 
