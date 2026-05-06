@@ -1,6 +1,6 @@
 # 阶段报告 08：SmolLM 与 Pythia 的 KV-cache RTT 对比结论
 
-> 修正说明：本报告中 Pythia `--ignore-eos` 版本结果目前应视为 diagnostic result（诊断结果），不应直接作为最终 break-even RTT（盈亏平衡 RTT）结论。原因是 Pythia 原始 greedy decoding（贪心解码）会很快输出 EOS（结束 token），`--ignore-eos` 只是忽略停止条件，可能导致模型在 EOS 之后继续生成退化 token 序列，使 accept rate（接受率）虚高到 1.0。后续应使用 `--suppress-eos` 在 argmax（取最大概率 token）前屏蔽 EOS，再重跑固定 32-token continuation（续写）实验。
+> 修正说明：本报告中 Pythia `--ignore-eos` 和 `--suppress-eos` 版本结果目前应视为 diagnostic result（诊断结果），不应直接作为最终 break-even RTT（盈亏平衡 RTT）结论。原因是 acceptance diagnostics（接受率诊断）显示，Pythia 在当前 prompts 下会重复生成同一个不可见/特殊 token，导致 `target-only` 和 `draft-only` 也完全一致，accept rate（接受率）虚高到 1.0。后续应使用 `--suppress-special-tokens` 在 argmax（取最大概率 token）前屏蔽所有 tokenizer special tokens（分词器特殊 token），再重跑固定 32-token continuation（续写）实验。
 
 ## 本阶段目标
 
