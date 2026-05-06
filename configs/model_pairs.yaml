@@ -5,6 +5,12 @@ model_pairs:
   - name: pythia-local
     target: /home/chajiahao/data/hf_models/pythia-410m-deduped
     draft: /home/chajiahao/data/hf_models/pythia-160m-deduped
+  - name: qwen25-1p5b-local
+    target: /home/chajiahao/data/hf_models/Qwen2.5-1.5B
+    draft: /home/chajiahao/data/hf_models/Qwen2.5-0.5B
+  - name: qwen25-3b-local
+    target: /home/chajiahao/data/hf_models/Qwen2.5-3B
+    draft: /home/chajiahao/data/hf_models/Qwen2.5-0.5B
   - name: pythia
     target: EleutherAI/pythia-410m-deduped
     draft: EleutherAI/pythia-160m-deduped
