@@ -157,7 +157,16 @@ def _clone_past_key_values(past_key_values: Any) -> Any:
         return None
     if hasattr(past_key_values, "to_legacy_cache"):
         try:
-            return _clone_past_key_values(past_key_values.to_legacy_cache())
+            legacy_cache = _clone_past_key_values(past_key_values.to_legacy_cache())
+            from_legacy_cache = getattr(type(past_key_values), "from_legacy_cache", None)
+            if from_legacy_cache is not None:
+                return from_legacy_cache(legacy_cache)
+            try:
+                from transformers.cache_utils import DynamicCache
+
+                return DynamicCache.from_legacy_cache(legacy_cache)
+            except Exception:
+                pass
         except Exception:
             pass
     if torch.is_tensor(past_key_values):
