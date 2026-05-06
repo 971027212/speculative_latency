@@ -139,6 +139,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--suppress-token-id",
+        action="append",
+        type=int,
+        default=[],
+        help=(
+            "Additional token id to mask before argmax. Repeatable. Useful "
+            "for tokenizer-specific padding/control tokens not listed in "
+            "all_special_ids."
+        ),
+    )
+    parser.add_argument(
         "--allow-mismatch",
         action="store_true",
         help="Record mismatches and continue instead of raising immediately.",
@@ -203,17 +214,27 @@ def main() -> None:
 
         for pair in pairs:
             tokenizer = load_tokenizer(pair.target, trust_remote_code=args.trust_remote_code)
+            suppress_ids = set(args.suppress_token_id or [])
+            if args.suppress_special_tokens:
+                suppress_ids.update(int(token_id) for token_id in tokenizer.all_special_ids)
+                if tokenizer.pad_token_id is not None:
+                    suppress_ids.add(int(tokenizer.pad_token_id))
+            if args.suppress_eos and tokenizer.eos_token_id is not None:
+                suppress_ids.add(int(tokenizer.eos_token_id))
             eos_token_id = (
                 None
-                if args.ignore_eos or args.suppress_eos or args.suppress_special_tokens
+                if (
+                    args.ignore_eos
+                    or args.suppress_eos
+                    or args.suppress_special_tokens
+                    or (
+                        tokenizer.eos_token_id is not None
+                        and int(tokenizer.eos_token_id) in suppress_ids
+                    )
+                )
                 else tokenizer.eos_token_id
             )
-            if args.suppress_special_tokens:
-                suppress_token_id = sorted(set(tokenizer.all_special_ids))
-            elif args.suppress_eos:
-                suppress_token_id = tokenizer.eos_token_id
-            else:
-                suppress_token_id = None
+            suppress_token_id = sorted(suppress_ids) if suppress_ids else None
             target_model = load_causal_lm(
                 pair.target,
                 device=device,
