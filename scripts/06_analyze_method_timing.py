@@ -38,6 +38,7 @@ LEGACY_TIME_COLUMNS = [
 ]
 
 PARAM_COLUMNS = [
+    "target_verify_mode",
     "upload_token_bytes",
     "upload_bandwidth_mbps",
     "uplink_bandwidth_mbps",
@@ -153,6 +154,7 @@ def _prepare_columns(df: pd.DataFrame) -> None:
 
     _ensure_column(df, "upload_token_bytes", 0.0)
     _ensure_column(df, "upload_bandwidth_mbps", 0.0)
+    _ensure_column(df, "target_verify_mode", "legacy")
     if "uplink_bandwidth_mbps" not in df.columns:
         df["uplink_bandwidth_mbps"] = df["upload_bandwidth_mbps"]
     if "downlink_bandwidth_mbps" not in df.columns:
@@ -379,6 +381,8 @@ def main() -> None:
             base[f"{column}_share"] = row[column] / denominator if denominator else 0.0
         share_rows.append(base)
     shares = pd.DataFrame(share_rows)
+    for column in TIME_COLUMNS:
+        shares[f"{column}_percent"] = shares[f"{column}_share"] * 100.0
 
     summary_path = Path(args.summary_output)
     share_path = Path(args.share_output)

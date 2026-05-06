@@ -41,6 +41,7 @@ TIME_FIELDS = [
 FIELDNAMES = [
     "method_name",
     "implementation",
+    "target_verify_mode",
     "model_pair",
     "target",
     "draft",
@@ -87,6 +88,17 @@ def parse_args() -> argparse.Namespace:
         "--implementation",
         default="full-prefix",
         choices=["full-prefix", "kv-cache"],
+    )
+    parser.add_argument(
+        "--target-verify-mode",
+        default="sequential",
+        choices=["sequential", "batch"],
+        help=(
+            "Target verification path for kv-cache speculative methods. "
+            "sequential matches target-only's one-token cache path and is "
+            "the conservative correctness default; batch keeps the old "
+            "multi-token verification path."
+        ),
     )
     parser.add_argument("--prompt", action="append", help="Prompt text. Repeatable.")
     parser.add_argument("--max-new-tokens", type=int, default=32)
@@ -219,6 +231,7 @@ def run_one(
     downlink_token_bytes: int,
     downlink_fixed_bytes: int,
     downlink_bandwidth_mbps: float,
+    target_verify_mode: str,
     suppress_token_id,
 ):
     runner = RUNNERS[method_name]
@@ -239,6 +252,7 @@ def run_one(
         downlink_token_bytes=downlink_token_bytes,
         downlink_fixed_bytes=downlink_fixed_bytes,
         downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        target_verify_mode=target_verify_mode,
     )
 
 
@@ -325,6 +339,7 @@ def main() -> None:
                             args.downlink_token_bytes,
                             args.downlink_fixed_bytes,
                             downlink_bandwidth_mbps,
+                            args.target_verify_mode,
                             suppress_token_id,
                         )
 
@@ -362,6 +377,7 @@ def main() -> None:
                         args.downlink_token_bytes,
                         args.downlink_fixed_bytes,
                         downlink_bandwidth_mbps,
+                        args.target_verify_mode,
                         suppress_token_id,
                     )
                 baseline = baseline_cache[baseline_key]
@@ -386,6 +402,7 @@ def main() -> None:
                         args.downlink_token_bytes,
                         args.downlink_fixed_bytes,
                         downlink_bandwidth_mbps,
+                        args.target_verify_mode,
                         suppress_token_id,
                     )
 
@@ -394,6 +411,7 @@ def main() -> None:
                 row = {
                     "method_name": method_name,
                     "implementation": args.implementation,
+                    "target_verify_mode": args.target_verify_mode,
                     "model_pair": pair.name,
                     "target": pair.target,
                     "draft": pair.draft,

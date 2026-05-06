@@ -312,6 +312,30 @@ def _cached_forward(model, input_ids: torch.Tensor, past_key_values: Any):
         )
 
 
+def _cached_verify_sequential(
+    target_model,
+    draft_tokens: list[int],
+    target_next_logits: torch.Tensor,
+    target_past: Any,
+    input_ids: torch.Tensor,
+) -> tuple[list[torch.Tensor], torch.Tensor, Any]:
+    """Verify draft tokens with the same one-step cache path as target-only."""
+
+    verify_past = _clone_past_key_values(target_past)
+    next_logits = target_next_logits
+    logits_for_draft: list[torch.Tensor] = []
+    for token_id in draft_tokens:
+        logits_for_draft.append(next_logits)
+        outputs = _cached_forward(
+            target_model,
+            _tokens_tensor([token_id], input_ids),
+            verify_past,
+        )
+        verify_past = outputs.past_key_values
+        next_logits = outputs.logits[:, -1, :]
+    return logits_for_draft, next_logits, verify_past
+
+
 @torch.inference_mode()
 def target_only_greedy(
     target_model,
@@ -585,6 +609,7 @@ def speculative_greedy_cached(
     downlink_bandwidth_mbps: float = 0.0,
     min_draft_k: int | None = None,
     max_draft_k: int | None = None,
+    target_verify_mode: str = "sequential",
     suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Greedy speculative decoding with KV cache.
@@ -600,6 +625,8 @@ def speculative_greedy_cached(
 
     if draft_k < 1:
         raise ValueError("draft_k must be >= 1")
+    if target_verify_mode not in {"batch", "sequential"}:
+        raise ValueError("target_verify_mode must be 'batch' or 'sequential'")
     adaptive_draft = min_draft_k is not None or max_draft_k is not None
     if adaptive_draft:
         min_draft_k = 1 if min_draft_k is None else min_draft_k
@@ -679,13 +706,33 @@ def speculative_greedy_cached(
             uplink_bandwidth_mbps=uplink_bandwidth_mbps,
         )
 
-        draft_tensor = _tokens_tensor(draft_tokens, input_ids)
-        with timed_bucket(timings, "target_verify_time", device):
-            verify_outputs = _cached_forward(
-                target_model,
-                draft_tensor,
-                _clone_past_key_values(target_past),
-            )
+        if target_verify_mode == "batch":
+            draft_tensor = _tokens_tensor(draft_tokens, input_ids)
+            with timed_bucket(timings, "target_verify_time", device):
+                verify_outputs = _cached_forward(
+                    target_model,
+                    draft_tensor,
+                    _clone_past_key_values(target_past),
+                )
+            verify_logits = verify_outputs.logits
+            verify_past_after_draft = verify_outputs.past_key_values
+            target_logits_for_draft = [target_next_logits]
+            for i in range(1, len(draft_tokens)):
+                target_logits_for_draft.append(verify_logits[:, i - 1, :])
+            bonus_logits = verify_logits[:, -1, :]
+        else:
+            with timed_bucket(timings, "target_verify_time", device):
+                (
+                    target_logits_for_draft,
+                    bonus_logits,
+                    verify_past_after_draft,
+                ) = _cached_verify_sequential(
+                    target_model,
+                    draft_tokens,
+                    target_next_logits,
+                    target_past,
+                    input_ids,
+                )
         simulate_downlink_wait(
             timings,
             rtt_ms=rtt_ms,
@@ -693,19 +740,13 @@ def speculative_greedy_cached(
             downlink_fixed_bytes=downlink_fixed_bytes,
             downlink_bandwidth_mbps=downlink_bandwidth_mbps,
         )
-        verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
             target_tokens_for_draft = [
-                _argmax_token_id(target_next_logits, suppress_token_id)
+                _argmax_token_id(logits, suppress_token_id)
+                for logits in target_logits_for_draft
             ]
-            for i in range(1, len(draft_tokens)):
-                token = _argmax_token_id(
-                    verify_logits[:, i - 1, :],
-                    suppress_token_id,
-                )
-                target_tokens_for_draft.append(token)
-            bonus_token = _argmax_token_id(verify_logits[:, -1, :], suppress_token_id)
+            bonus_token = _argmax_token_id(bonus_logits, suppress_token_id)
 
         with timed_bucket(timings, "posterior_accept_time", device):
             accepted_this_round = 0
@@ -745,7 +786,7 @@ def speculative_greedy_cached(
             attention_mask = torch.ones_like(output_ids)
 
             if can_reuse_verified_target:
-                target_past = verify_outputs.past_key_values
+                target_past = verify_past_after_draft
                 if extra_tokens:
                     target_outputs = _cached_forward(
                         target_model,
@@ -755,7 +796,7 @@ def speculative_greedy_cached(
                     target_past = target_outputs.past_key_values
                     target_next_logits = target_outputs.logits[:, -1, :]
                 else:
-                    target_next_logits = verify_logits[:, -1, :]
+                    target_next_logits = bonus_logits
             else:
                 target_outputs = _cached_forward(target_model, new_tensor, target_past)
                 target_past = target_outputs.past_key_values
@@ -788,9 +829,10 @@ def speculative_greedy_cached(
             "mean_draft_k": sum(draft_k_history) / len(draft_k_history)
             if draft_k_history
             else 0.0,
+            "target_verify_mode": target_verify_mode,
         }
         if adaptive_draft
-        else {},
+        else {"target_verify_mode": target_verify_mode},
     )
 
 

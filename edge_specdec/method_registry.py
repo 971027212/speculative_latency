@@ -61,6 +61,7 @@ def run_target_only(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
+    target_verify_mode: str = "sequential",
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return target_only_greedy_cached(
@@ -96,6 +97,7 @@ def run_vanilla_spec(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
+    target_verify_mode: str = "sequential",
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -111,6 +113,7 @@ def run_vanilla_spec(
             downlink_token_bytes=downlink_token_bytes,
             downlink_fixed_bytes=downlink_fixed_bytes,
             downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+            target_verify_mode=target_verify_mode,
             eos_token_id=eos_token_id,
             suppress_token_id=suppress_token_id,
         )
@@ -149,6 +152,7 @@ def run_specinfer(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
+    target_verify_mode: str = "sequential",
 ) -> DecodeResult:
     return specinfer_tree_simplified(
         target_model,
@@ -186,6 +190,7 @@ def run_dsd_adaptive(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
+    target_verify_mode: str = "sequential",
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -203,6 +208,7 @@ def run_dsd_adaptive(
             downlink_token_bytes=downlink_token_bytes,
             downlink_fixed_bytes=downlink_fixed_bytes,
             downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+            target_verify_mode=target_verify_mode,
             eos_token_id=eos_token_id,
             suppress_token_id=suppress_token_id,
         )
