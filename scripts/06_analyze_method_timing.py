@@ -403,6 +403,9 @@ def main() -> None:
                 "method_time",
                 "speedup_vs_target_only",
                 "accept_rate",
+                "generated_tokens",
+                "rounds",
+                "drafted_tokens",
                 "wasted_branch_time_or_tokens",
             ]
         ].to_string(index=False)

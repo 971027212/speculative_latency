@@ -114,6 +114,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="results/method_timing_raw.csv")
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help=(
+            "Ignore eos_token_id and force decoding to max_new_tokens. Useful "
+            "when a model emits EOS immediately and would make timing trivial."
+        ),
+    )
+    parser.add_argument(
         "--allow-mismatch",
         action="store_true",
         help="Record mismatches and continue instead of raising immediately.",
@@ -176,6 +184,7 @@ def main() -> None:
 
         for pair in pairs:
             tokenizer = load_tokenizer(pair.target, trust_remote_code=args.trust_remote_code)
+            eos_token_id = None if args.ignore_eos else tokenizer.eos_token_id
             target_model = load_causal_lm(
                 pair.target,
                 device=device,
@@ -204,7 +213,7 @@ def main() -> None:
                             args.max_new_tokens,
                             args.draft_k,
                             0.0,
-                            tokenizer.eos_token_id,
+                            eos_token_id,
                             args.tree_width,
                             args.upload_token_bytes,
                             args.upload_bandwidth_mbps,
@@ -236,7 +245,7 @@ def main() -> None:
                         args.max_new_tokens,
                         args.draft_k,
                         0.0,
-                        tokenizer.eos_token_id,
+                        eos_token_id,
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
@@ -255,7 +264,7 @@ def main() -> None:
                         args.max_new_tokens,
                         args.draft_k,
                         rtt_ms,
-                        tokenizer.eos_token_id,
+                        eos_token_id,
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
