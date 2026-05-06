@@ -9,6 +9,9 @@ from typing import Any
 import torch
 
 
+SuppressTokenIds = int | list[int] | set[int] | tuple[int, ...] | None
+
+
 TIME_BUCKETS = [
     "prefill_time",
     "draft_generate_time",
@@ -128,26 +131,35 @@ class DecodeResult:
         return self.accepted_tokens / self.drafted_tokens
 
 
-def _mask_token(logits: torch.Tensor, token_id: int | None) -> torch.Tensor:
-    if token_id is None:
+def _suppressed_token_ids(token_ids: SuppressTokenIds) -> list[int]:
+    if token_ids is None:
+        return []
+    if isinstance(token_ids, int):
+        return [token_ids]
+    return [int(token_id) for token_id in token_ids]
+
+
+def _mask_token(logits: torch.Tensor, token_id: SuppressTokenIds) -> torch.Tensor:
+    token_ids = _suppressed_token_ids(token_id)
+    if not token_ids:
         return logits
     masked_logits = logits.clone()
-    masked_logits[..., token_id] = torch.finfo(masked_logits.dtype).min
+    masked_logits[..., token_ids] = torch.finfo(masked_logits.dtype).min
     return masked_logits
 
 
-def _argmax_token(logits: torch.Tensor, suppress_token_id: int | None = None) -> torch.Tensor:
+def _argmax_token(logits: torch.Tensor, suppress_token_id: SuppressTokenIds = None) -> torch.Tensor:
     logits = _mask_token(logits, suppress_token_id)
     return torch.argmax(logits, dim=-1, keepdim=True)
 
 
-def _argmax_token_id(logits: torch.Tensor, suppress_token_id: int | None = None) -> int:
+def _argmax_token_id(logits: torch.Tensor, suppress_token_id: SuppressTokenIds = None) -> int:
     return int(_argmax_token(logits, suppress_token_id).item())
 
 
 def _argmax_next_token(
     logits: torch.Tensor,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> torch.Tensor:
     return _argmax_token(logits[:, -1, :], suppress_token_id)
 
@@ -246,7 +258,7 @@ def target_only_greedy(
     input_ids: torch.Tensor,
     max_new_tokens: int,
     eos_token_id: int | None = None,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Plain greedy decoding with the target model.
 
@@ -289,7 +301,7 @@ def target_only_greedy_cached(
     input_ids: torch.Tensor,
     max_new_tokens: int,
     eos_token_id: int | None = None,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Greedy target-only decoding with KV cache.
 
@@ -359,7 +371,7 @@ def speculative_greedy(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Minimal greedy speculative decoding.
 
@@ -497,7 +509,7 @@ def speculative_greedy_cached(
     upload_bandwidth_mbps: float = 0.0,
     min_draft_k: int | None = None,
     max_draft_k: int | None = None,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Greedy speculative decoding with KV cache.
 
@@ -711,7 +723,7 @@ def speculative_greedy_adaptive_draft(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Lossless speculative decoding with adaptive draft length.
 
@@ -852,7 +864,7 @@ def specinfer_tree_simplified(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
-    suppress_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Simplified SpecInfer-style tree draft and batched verification.
 

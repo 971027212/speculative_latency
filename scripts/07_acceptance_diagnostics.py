@@ -34,6 +34,8 @@ FIELDNAMES = [
     "eos_token_count",
     "generated_token_ids",
     "generated_text",
+    "generated_text_repr",
+    "generated_text_with_specials_repr",
     "full_text",
     "extra_json",
 ]
@@ -73,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Mask eos_token_id before argmax and force non-EOS continuation.",
     )
+    parser.add_argument(
+        "--suppress-special-tokens",
+        action="store_true",
+        help="Mask all tokenizer special token ids before argmax.",
+    )
     parser.add_argument("--output", default="results/acceptance_diagnostics.csv")
     return parser.parse_args()
 
@@ -92,7 +99,7 @@ def run_target_only(
     input_ids,
     max_new_tokens: int,
     eos_token_id: int | None,
-    suppress_token_id: int | None,
+    suppress_token_id,
 ):
     if implementation == "kv-cache":
         return target_only_greedy_cached(
@@ -142,6 +149,12 @@ def make_row(
         "eos_token_count": eos_count,
         "generated_token_ids": " ".join(str(token_id) for token_id in generated_ids),
         "generated_text": tokenizer.decode(generated_ids, skip_special_tokens=True),
+        "generated_text_repr": repr(
+            tokenizer.decode(generated_ids, skip_special_tokens=True)
+        ),
+        "generated_text_with_specials_repr": repr(
+            tokenizer.decode(generated_ids, skip_special_tokens=False)
+        ),
         "full_text": tokenizer.decode(result.output_ids, skip_special_tokens=True),
         "extra_json": json.dumps(result.extra, ensure_ascii=False),
     }
@@ -159,8 +172,28 @@ def main() -> None:
     rows: list[dict[str, object]] = []
     for pair in pairs:
         tokenizer = load_tokenizer(pair.target, trust_remote_code=args.trust_remote_code)
-        eos_token_id = None if args.ignore_eos or args.suppress_eos else tokenizer.eos_token_id
-        suppress_token_id = tokenizer.eos_token_id if args.suppress_eos else None
+        eos_token_id = (
+            None
+            if args.ignore_eos or args.suppress_eos or args.suppress_special_tokens
+            else tokenizer.eos_token_id
+        )
+        if args.suppress_special_tokens:
+            suppress_token_id = sorted(set(tokenizer.all_special_ids))
+        elif args.suppress_eos:
+            suppress_token_id = tokenizer.eos_token_id
+        else:
+            suppress_token_id = None
+        print(
+            json.dumps(
+                {
+                    "model_pair": pair.name,
+                    "eos_token_id": tokenizer.eos_token_id,
+                    "all_special_ids": tokenizer.all_special_ids,
+                    "suppress_token_id": suppress_token_id,
+                },
+                ensure_ascii=False,
+            )
+        )
 
         target_model = load_causal_lm(
             pair.target,
@@ -273,6 +306,9 @@ def main() -> None:
         "drafted_tokens",
         "unique_generated_token_count",
         "eos_token_count",
+        "generated_token_ids",
+        "generated_text_repr",
+        "generated_text_with_specials_repr",
         "generated_text",
     ]
     for row in rows:
