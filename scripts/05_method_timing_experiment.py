@@ -102,6 +102,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--dtype", default="float16", choices=["auto", "float16", "bfloat16", "float32"])
+    parser.add_argument(
+        "--attn-implementation",
+        default=None,
+        choices=["eager", "sdpa", "flash_attention_2"],
+        help=(
+            "Optional Transformers attention backend. Use eager when SDPA "
+            "KV-cache batched verification causes correctness mismatches."
+        ),
+    )
     parser.add_argument("--output", default="results/method_timing_raw.csv")
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument(
@@ -172,12 +181,14 @@ def main() -> None:
                 device=device,
                 dtype=args.dtype,
                 trust_remote_code=args.trust_remote_code,
+                attn_implementation=args.attn_implementation,
             )
             draft_model = load_causal_lm(
                 pair.draft,
                 device=device,
                 dtype=args.dtype,
                 trust_remote_code=args.trust_remote_code,
+                attn_implementation=args.attn_implementation,
             )
 
             if args.warmups > 0:

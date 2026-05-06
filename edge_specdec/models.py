@@ -44,12 +44,18 @@ def load_causal_lm(
     device: torch.device,
     dtype: str = "auto",
     trust_remote_code: bool = False,
+    attn_implementation: str | None = None,
 ):
     torch_dtype = resolve_dtype(dtype, device)
+    model_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": trust_remote_code,
+    }
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch_dtype,
-        trust_remote_code=trust_remote_code,
+        **model_kwargs,
     )
     model.to(device)
     model.eval()
