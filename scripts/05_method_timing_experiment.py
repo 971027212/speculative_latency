@@ -24,6 +24,11 @@ TIME_FIELDS = [
     "upload_latency_time",
     "upload_transfer_time",
     "upload_payload_bytes",
+    "uplink_transfer_time",
+    "network_wait_time",
+    "downlink_transfer_time",
+    "downlink_payload_bytes",
+    "cloud_verify_time",
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
@@ -44,6 +49,10 @@ FIELDNAMES = [
     "rtt_ms",
     "upload_token_bytes",
     "upload_bandwidth_mbps",
+    "uplink_bandwidth_mbps",
+    "downlink_token_bytes",
+    "downlink_fixed_bytes",
+    "downlink_bandwidth_mbps",
     "max_new_tokens",
     "draft_k",
     "tree_width",
@@ -95,9 +104,36 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "Optional upload bandwidth in Mbps. If <= 0, only fixed RTT is "
-            "simulated, matching the original behavior."
+            "Legacy upload bandwidth in Mbps. If <= 0, transfer time is not "
+            "simulated, but fixed network wait from --rtt-ms still applies."
         ),
+    )
+    parser.add_argument(
+        "--uplink-bandwidth-mbps",
+        type=float,
+        default=None,
+        help=(
+            "Optional uplink bandwidth in Mbps. Defaults to "
+            "--upload-bandwidth-mbps for backward compatibility."
+        ),
+    )
+    parser.add_argument(
+        "--downlink-bandwidth-mbps",
+        type=float,
+        default=None,
+        help="Optional downlink bandwidth in Mbps. Defaults to uplink bandwidth.",
+    )
+    parser.add_argument(
+        "--downlink-token-bytes",
+        type=int,
+        default=4,
+        help="Payload bytes for the response token returned by cloud verification.",
+    )
+    parser.add_argument(
+        "--downlink-fixed-bytes",
+        type=int,
+        default=4,
+        help="Fixed response payload bytes per verification round, e.g. accepted count.",
     )
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
@@ -179,6 +215,10 @@ def run_one(
     tree_width: int,
     upload_token_bytes: int,
     upload_bandwidth_mbps: float,
+    uplink_bandwidth_mbps: float,
+    downlink_token_bytes: int,
+    downlink_fixed_bytes: int,
+    downlink_bandwidth_mbps: float,
     suppress_token_id,
 ):
     runner = RUNNERS[method_name]
@@ -195,6 +235,10 @@ def run_one(
         upload_token_bytes,
         upload_bandwidth_mbps,
         suppress_token_id,
+        uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+        downlink_token_bytes=downlink_token_bytes,
+        downlink_fixed_bytes=downlink_fixed_bytes,
+        downlink_bandwidth_mbps=downlink_bandwidth_mbps,
     )
 
 
@@ -204,6 +248,16 @@ def main() -> None:
     prompts = args.prompt or DEFAULT_PROMPTS
     methods = args.method or available_methods()
     pairs = select_model_pairs(load_model_pairs(args.config), args.pair)
+    uplink_bandwidth_mbps = (
+        args.upload_bandwidth_mbps
+        if args.uplink_bandwidth_mbps is None
+        else args.uplink_bandwidth_mbps
+    )
+    downlink_bandwidth_mbps = (
+        uplink_bandwidth_mbps
+        if args.downlink_bandwidth_mbps is None
+        else args.downlink_bandwidth_mbps
+    )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -267,6 +321,10 @@ def main() -> None:
                             args.tree_width,
                             args.upload_token_bytes,
                             args.upload_bandwidth_mbps,
+                            uplink_bandwidth_mbps,
+                            args.downlink_token_bytes,
+                            args.downlink_fixed_bytes,
+                            downlink_bandwidth_mbps,
                             suppress_token_id,
                         )
 
@@ -300,6 +358,10 @@ def main() -> None:
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
+                        uplink_bandwidth_mbps,
+                        args.downlink_token_bytes,
+                        args.downlink_fixed_bytes,
+                        downlink_bandwidth_mbps,
                         suppress_token_id,
                     )
                 baseline = baseline_cache[baseline_key]
@@ -320,6 +382,10 @@ def main() -> None:
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
+                        uplink_bandwidth_mbps,
+                        args.downlink_token_bytes,
+                        args.downlink_fixed_bytes,
+                        downlink_bandwidth_mbps,
                         suppress_token_id,
                     )
 
@@ -336,6 +402,10 @@ def main() -> None:
                     "rtt_ms": rtt_ms,
                     "upload_token_bytes": args.upload_token_bytes,
                     "upload_bandwidth_mbps": args.upload_bandwidth_mbps,
+                    "uplink_bandwidth_mbps": uplink_bandwidth_mbps,
+                    "downlink_token_bytes": args.downlink_token_bytes,
+                    "downlink_fixed_bytes": args.downlink_fixed_bytes,
+                    "downlink_bandwidth_mbps": downlink_bandwidth_mbps,
                     "max_new_tokens": args.max_new_tokens,
                     "draft_k": args.draft_k,
                     "tree_width": args.tree_width,

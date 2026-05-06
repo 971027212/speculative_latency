@@ -57,6 +57,10 @@ def run_target_only(
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
     suppress_token_id: int | None = None,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return target_only_greedy_cached(
@@ -88,6 +92,10 @@ def run_vanilla_spec(
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
     suppress_token_id: int | None = None,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -99,6 +107,10 @@ def run_vanilla_spec(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
             eos_token_id=eos_token_id,
             suppress_token_id=suppress_token_id,
         )
@@ -111,6 +123,10 @@ def run_vanilla_spec(
         rtt_ms=rtt_ms,
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
+        uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+        downlink_token_bytes=downlink_token_bytes,
+        downlink_fixed_bytes=downlink_fixed_bytes,
+        downlink_bandwidth_mbps=downlink_bandwidth_mbps,
         eos_token_id=eos_token_id,
         suppress_token_id=suppress_token_id,
     )
@@ -129,6 +145,10 @@ def run_specinfer(
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
     suppress_token_id: int | None = None,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     return specinfer_tree_simplified(
         target_model,
@@ -140,6 +160,10 @@ def run_specinfer(
         rtt_ms=rtt_ms,
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
+        uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+        downlink_token_bytes=downlink_token_bytes,
+        downlink_fixed_bytes=downlink_fixed_bytes,
+        downlink_bandwidth_mbps=downlink_bandwidth_mbps,
         eos_token_id=eos_token_id,
         suppress_token_id=suppress_token_id,
     )
@@ -158,6 +182,10 @@ def run_dsd_adaptive(
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
     suppress_token_id: int | None = None,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -171,6 +199,10 @@ def run_dsd_adaptive(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
             eos_token_id=eos_token_id,
             suppress_token_id=suppress_token_id,
         )
@@ -185,6 +217,10 @@ def run_dsd_adaptive(
         rtt_ms=rtt_ms,
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
+        uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+        downlink_token_bytes=downlink_token_bytes,
+        downlink_fixed_bytes=downlink_fixed_bytes,
+        downlink_bandwidth_mbps=downlink_bandwidth_mbps,
         eos_token_id=eos_token_id,
         suppress_token_id=suppress_token_id,
     )

@@ -20,6 +20,11 @@ TIME_BUCKETS = [
     "upload_latency_time",
     "upload_transfer_time",
     "upload_payload_bytes",
+    "uplink_transfer_time",
+    "network_wait_time",
+    "downlink_transfer_time",
+    "downlink_payload_bytes",
+    "cloud_verify_time",
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
@@ -42,6 +47,11 @@ class DecodeTimings:
     upload_latency_time: float = 0.0
     upload_transfer_time: float = 0.0
     upload_payload_bytes: float = 0.0
+    uplink_transfer_time: float = 0.0
+    network_wait_time: float = 0.0
+    downlink_transfer_time: float = 0.0
+    downlink_payload_bytes: float = 0.0
+    cloud_verify_time: float = 0.0
     target_verify_time: float = 0.0
     posterior_accept_time: float = 0.0
     cache_update_time: float = 0.0
@@ -53,6 +63,8 @@ class DecodeTimings:
     def add(self, bucket: str, seconds: float) -> None:
         if bucket == "kv_or_input_update_time":
             self.cache_update_time += seconds
+        if bucket == "target_verify_time":
+            self.cloud_verify_time += seconds
         setattr(self, bucket, getattr(self, bucket) + seconds)
 
     def as_dict(self) -> dict[str, float]:
@@ -64,6 +76,11 @@ class DecodeTimings:
             "upload_latency_time": self.upload_latency_time,
             "upload_transfer_time": self.upload_transfer_time,
             "upload_payload_bytes": self.upload_payload_bytes,
+            "uplink_transfer_time": self.uplink_transfer_time,
+            "network_wait_time": self.network_wait_time,
+            "downlink_transfer_time": self.downlink_transfer_time,
+            "downlink_payload_bytes": self.downlink_payload_bytes,
+            "cloud_verify_time": self.cloud_verify_time,
             "target_verify_time": self.target_verify_time,
             "posterior_accept_time": self.posterior_accept_time,
             "cache_update_time": self.cache_update_time,
@@ -83,35 +100,78 @@ def timed_bucket(timings: DecodeTimings, bucket: str, device: torch.device):
     timings.add(bucket, time.perf_counter() - start)
 
 
+def _transfer_seconds(payload_bytes: int, bandwidth_mbps: float) -> float:
+    if bandwidth_mbps <= 0 or payload_bytes <= 0:
+        return 0.0
+    return (payload_bytes * 8.0) / (bandwidth_mbps * 1_000_000.0)
+
+
+def _sleep_and_measure(seconds: float) -> float:
+    if seconds <= 0:
+        return 0.0
+    start = time.perf_counter()
+    time.sleep(seconds)
+    return time.perf_counter() - start
+
+
 def simulate_upload_wait(
     timings: DecodeTimings,
     draft_token_count: int,
     rtt_ms: float,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
 ) -> None:
-    """Simulate edge-to-cloud upload wait for draft tokens.
+    """Simulate the request-side edge-to-cloud exchange for draft tokens.
 
-    rtt_ms models fixed per-round latency. upload_bandwidth_mbps optionally
-    adds payload transfer time from token ids. A non-positive bandwidth keeps
-    the old fixed-RTT behavior while still recording payload size.
+    rtt_ms is treated as the fixed round-trip network wait budget, excluding
+    transfer and target compute. The request side consumes half of that wait;
+    the response side consumes the other half in simulate_downlink_wait.
     """
 
+    bandwidth_mbps = (
+        upload_bandwidth_mbps if uplink_bandwidth_mbps is None else uplink_bandwidth_mbps
+    )
     payload_bytes = max(0, draft_token_count) * max(0, upload_token_bytes)
-    latency_seconds = max(0.0, rtt_ms) / 1000.0
-    transfer_seconds = 0.0
-    if upload_bandwidth_mbps > 0 and payload_bytes > 0:
-        transfer_seconds = (payload_bytes * 8.0) / (upload_bandwidth_mbps * 1_000_000.0)
+    network_wait_seconds = max(0.0, rtt_ms) / 2000.0
+    transfer_seconds = _transfer_seconds(payload_bytes, bandwidth_mbps)
 
     timings.upload_payload_bytes += float(payload_bytes)
-    timings.upload_latency_time += latency_seconds
+    timings.upload_latency_time += network_wait_seconds
     timings.upload_transfer_time += transfer_seconds
+    timings.uplink_transfer_time += transfer_seconds
+    timings.network_wait_time += network_wait_seconds
 
-    wait_seconds = latency_seconds + transfer_seconds
-    if wait_seconds > 0:
-        start = time.perf_counter()
-        time.sleep(wait_seconds)
-        timings.upload_wait_time += time.perf_counter() - start
+    wait_seconds = network_wait_seconds + transfer_seconds
+    _sleep_and_measure(wait_seconds)
+    timings.upload_wait_time += wait_seconds
+
+
+def simulate_downlink_wait(
+    timings: DecodeTimings,
+    rtt_ms: float,
+    response_token_count: int = 1,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
+) -> None:
+    """Simulate the response-side cloud-to-edge verification result transfer."""
+
+    payload_bytes = max(0, downlink_fixed_bytes) + max(0, response_token_count) * max(
+        0,
+        downlink_token_bytes,
+    )
+    network_wait_seconds = max(0.0, rtt_ms) / 2000.0
+    transfer_seconds = _transfer_seconds(payload_bytes, downlink_bandwidth_mbps)
+
+    timings.downlink_payload_bytes += float(payload_bytes)
+    timings.downlink_transfer_time += transfer_seconds
+    timings.network_wait_time += network_wait_seconds
+    timings.upload_latency_time += network_wait_seconds
+
+    wait_seconds = network_wait_seconds + transfer_seconds
+    _sleep_and_measure(wait_seconds)
+    timings.upload_wait_time += wait_seconds
 
 
 @dataclass
@@ -371,6 +431,10 @@ def speculative_greedy(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
     suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Minimal greedy speculative decoding.
@@ -419,6 +483,7 @@ def speculative_greedy(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
         )
 
         draft_tensor = torch.tensor([draft_tokens], dtype=input_ids.dtype, device=device)
@@ -427,6 +492,13 @@ def speculative_greedy(
 
         with timed_bucket(timings, "target_verify_time", device):
             target_logits = target_model(verify_input).logits
+        simulate_downlink_wait(
+            timings,
+            rtt_ms=rtt_ms,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        )
 
         with timed_bucket(timings, "sampling_time", device):
             target_tokens_for_draft = []
@@ -507,6 +579,10 @@ def speculative_greedy_cached(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
     min_draft_k: int | None = None,
     max_draft_k: int | None = None,
     suppress_token_id: SuppressTokenIds = None,
@@ -600,6 +676,7 @@ def speculative_greedy_cached(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
         )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
@@ -609,6 +686,13 @@ def speculative_greedy_cached(
                 draft_tensor,
                 _clone_past_key_values(target_past),
             )
+        simulate_downlink_wait(
+            timings,
+            rtt_ms=rtt_ms,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        )
         verify_logits = verify_outputs.logits
 
         with timed_bucket(timings, "sampling_time", device):
@@ -723,6 +807,10 @@ def speculative_greedy_adaptive_draft(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
     suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Lossless speculative decoding with adaptive draft length.
@@ -774,6 +862,7 @@ def speculative_greedy_adaptive_draft(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
         )
 
         draft_tensor = _tokens_tensor(draft_tokens, input_ids)
@@ -782,6 +871,13 @@ def speculative_greedy_adaptive_draft(
 
         with timed_bucket(timings, "target_verify_time", device):
             target_logits = target_model(verify_input).logits
+        simulate_downlink_wait(
+            timings,
+            rtt_ms=rtt_ms,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        )
 
         with timed_bucket(timings, "sampling_time", device):
             target_tokens_for_draft = []
@@ -864,6 +960,10 @@ def specinfer_tree_simplified(
     eos_token_id: int | None = None,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
     suppress_token_id: SuppressTokenIds = None,
 ) -> DecodeResult:
     """Simplified SpecInfer-style tree draft and batched verification.
@@ -932,6 +1032,7 @@ def specinfer_tree_simplified(
             rtt_ms=rtt_ms,
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
         )
 
         max_path_len = max(len(path) for path in candidate_paths)
@@ -945,6 +1046,13 @@ def specinfer_tree_simplified(
 
         with timed_bucket(timings, "target_verify_time", device):
             target_logits = target_model(verify_input).logits
+        simulate_downlink_wait(
+            timings,
+            rtt_ms=rtt_ms,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        )
 
         main_path = candidate_paths[0]
         with timed_bucket(timings, "sampling_time", device):
