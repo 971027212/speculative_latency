@@ -2,6 +2,9 @@ model_pairs:
   - name: smollm-local
     target: /home/chajiahao/data/hf_models/SmolLM-360M
     draft: /home/chajiahao/data/hf_models/SmolLM-135M
+  - name: pythia-local
+    target: /home/chajiahao/data/hf_models/pythia-410m-deduped
+    draft: /home/chajiahao/data/hf_models/pythia-160m-deduped
   - name: pythia
     target: EleutherAI/pythia-410m-deduped
     draft: EleutherAI/pythia-160m-deduped
