@@ -155,6 +155,11 @@ def _past_seq_len(past_key_values: Any) -> int:
 def _clone_past_key_values(past_key_values: Any) -> Any:
     if past_key_values is None:
         return None
+    if hasattr(past_key_values, "to_legacy_cache"):
+        try:
+            return _clone_past_key_values(past_key_values.to_legacy_cache())
+        except Exception:
+            pass
     if torch.is_tensor(past_key_values):
         return past_key_values.clone()
     if isinstance(past_key_values, tuple):
