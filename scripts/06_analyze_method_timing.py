@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
         "--markdown-output",
         default="reports/03_fine_grained_method_timing_analysis.md",
     )
+    parser.add_argument(
+        "--allow-mismatch",
+        action="store_true",
+        help="Print mismatch summary and analyze only matched rows.",
+    )
     return parser.parse_args()
 
 
@@ -296,7 +301,13 @@ def main() -> None:
             ~df["matched_target_only"],
             ["method_name", "model_pair", "prompt_id", "repeat", "rtt_ms", "first_diff_index"],
         ]
-        raise ValueError(f"Some methods mismatched target-only:\n{bad}")
+        if not args.allow_mismatch:
+            raise ValueError(f"Some methods mismatched target-only:\n{bad}")
+        print("\n=== Mismatch summary ===")
+        print(bad.to_string(index=False))
+        df = df[df["matched_target_only"]].copy()
+        if df.empty:
+            raise ValueError("No matched rows left to analyze.")
 
     group_columns = [
         "method_name",

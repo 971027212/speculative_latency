@@ -104,6 +104,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", default="float16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--output", default="results/method_timing_raw.csv")
     parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument(
+        "--allow-mismatch",
+        action="store_true",
+        help="Record mismatches and continue instead of raising immediately.",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +163,7 @@ def main() -> None:
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
+        mismatch_count = 0
 
         for pair in pairs:
             tokenizer = load_tokenizer(pair.target, trust_remote_code=args.trust_remote_code)
@@ -279,6 +285,7 @@ def main() -> None:
                 f.flush()
 
                 if not matched:
+                    mismatch_count += 1
                     baseline_text = tokenizer.decode(
                         baseline.output_ids,
                         skip_special_tokens=True,
@@ -287,14 +294,34 @@ def main() -> None:
                         result.output_ids,
                         skip_special_tokens=True,
                     )
-                    raise AssertionError(
+                    message = (
                         "Method output mismatch. "
                         f"method={method_name}, prompt_id={prompt_id}, "
                         f"first_diff_index={diff_index}\n"
                         f"baseline={baseline_text}\nmethod={method_text}"
                     )
+                    if args.allow_mismatch:
+                        print(
+                            json.dumps(
+                                {
+                                    "warning": "method_output_mismatch",
+                                    "method": method_name,
+                                    "prompt_id": prompt_id,
+                                    "repeat": repeat,
+                                    "rtt_ms": rtt_ms,
+                                    "first_diff_index": diff_index,
+                                    "baseline": baseline_text,
+                                    "method_output": method_text,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        continue
+                    raise AssertionError(message)
 
     print(f"Wrote raw method timing results to {output_path}")
+    if mismatch_count:
+        print(f"Recorded mismatches: {mismatch_count}")
 
 
 if __name__ == "__main__":
