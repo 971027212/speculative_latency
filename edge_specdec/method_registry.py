@@ -56,6 +56,7 @@ def run_target_only(
     tree_width: int,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    suppress_token_id: int | None = None,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return target_only_greedy_cached(
@@ -63,12 +64,14 @@ def run_target_only(
             input_ids,
             max_new_tokens=max_new_tokens,
             eos_token_id=eos_token_id,
+            suppress_token_id=suppress_token_id,
         )
     return target_only_greedy(
         target_model,
         input_ids,
         max_new_tokens=max_new_tokens,
         eos_token_id=eos_token_id,
+        suppress_token_id=suppress_token_id,
     )
 
 
@@ -84,6 +87,7 @@ def run_vanilla_spec(
     tree_width: int,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    suppress_token_id: int | None = None,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -96,6 +100,7 @@ def run_vanilla_spec(
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
             eos_token_id=eos_token_id,
+            suppress_token_id=suppress_token_id,
         )
     return speculative_greedy(
         target_model,
@@ -107,6 +112,7 @@ def run_vanilla_spec(
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
+        suppress_token_id=suppress_token_id,
     )
 
 
@@ -122,6 +128,7 @@ def run_specinfer(
     tree_width: int,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    suppress_token_id: int | None = None,
 ) -> DecodeResult:
     return specinfer_tree_simplified(
         target_model,
@@ -134,6 +141,7 @@ def run_specinfer(
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
+        suppress_token_id=suppress_token_id,
     )
 
 
@@ -149,6 +157,7 @@ def run_dsd_adaptive(
     tree_width: int,
     upload_token_bytes: int = 4,
     upload_bandwidth_mbps: float = 0.0,
+    suppress_token_id: int | None = None,
 ) -> DecodeResult:
     if method_impl == "kv-cache":
         return speculative_greedy_cached(
@@ -163,6 +172,7 @@ def run_dsd_adaptive(
             upload_token_bytes=upload_token_bytes,
             upload_bandwidth_mbps=upload_bandwidth_mbps,
             eos_token_id=eos_token_id,
+            suppress_token_id=suppress_token_id,
         )
     return speculative_greedy_adaptive_draft(
         target_model,
@@ -176,6 +186,7 @@ def run_dsd_adaptive(
         upload_token_bytes=upload_token_bytes,
         upload_bandwidth_mbps=upload_bandwidth_mbps,
         eos_token_id=eos_token_id,
+        suppress_token_id=suppress_token_id,
     )
 
 

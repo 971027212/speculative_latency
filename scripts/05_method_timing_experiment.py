@@ -122,6 +122,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--suppress-eos",
+        action="store_true",
+        help=(
+            "Mask eos_token_id before argmax and force non-EOS greedy "
+            "continuation to max_new_tokens. This avoids measuring a repeated "
+            "EOS tail."
+        ),
+    )
+    parser.add_argument(
         "--allow-mismatch",
         action="store_true",
         help="Record mismatches and continue instead of raising immediately.",
@@ -151,6 +160,7 @@ def run_one(
     tree_width: int,
     upload_token_bytes: int,
     upload_bandwidth_mbps: float,
+    suppress_token_id: int | None,
 ):
     runner = RUNNERS[method_name]
     return runner(
@@ -165,6 +175,7 @@ def run_one(
         tree_width,
         upload_token_bytes,
         upload_bandwidth_mbps,
+        suppress_token_id,
     )
 
 
@@ -184,7 +195,8 @@ def main() -> None:
 
         for pair in pairs:
             tokenizer = load_tokenizer(pair.target, trust_remote_code=args.trust_remote_code)
-            eos_token_id = None if args.ignore_eos else tokenizer.eos_token_id
+            eos_token_id = None if args.ignore_eos or args.suppress_eos else tokenizer.eos_token_id
+            suppress_token_id = tokenizer.eos_token_id if args.suppress_eos else None
             target_model = load_causal_lm(
                 pair.target,
                 device=device,
@@ -217,6 +229,7 @@ def main() -> None:
                             args.tree_width,
                             args.upload_token_bytes,
                             args.upload_bandwidth_mbps,
+                            suppress_token_id,
                         )
 
             work = [
@@ -249,6 +262,7 @@ def main() -> None:
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
+                        suppress_token_id,
                     )
                 baseline = baseline_cache[baseline_key]
 
@@ -268,6 +282,7 @@ def main() -> None:
                         args.tree_width,
                         args.upload_token_bytes,
                         args.upload_bandwidth_mbps,
+                        suppress_token_id,
                     )
 
                 matched = baseline.output_ids == result.output_ids
