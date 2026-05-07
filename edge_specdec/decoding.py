@@ -684,6 +684,11 @@ def traditional_speculative_sampling_cached(
     rejected_tokens = 0
     resample_count = 0
     bonus_sample_count = 0
+    proposal_accept_prob_sum = 0.0
+    proposal_accept_prob_count = 0
+    first_accept_prob_sum = 0.0
+    first_accept_prob_count = 0
+    target_zero_at_draft_count = 0
     rounds = 0
 
     _sync_if_cuda(device)
@@ -817,10 +822,18 @@ def traditional_speculative_sampling_cached(
             for i, draft_token in enumerate(draft_tokens):
                 target_prob = target_probs_for_draft[i][0, draft_token]
                 draft_prob = draft_probs_for_tokens[i][0, draft_token]
+                if float(target_prob.item()) <= 0.0:
+                    target_zero_at_draft_count += 1
                 if float(draft_prob.item()) <= 0.0:
                     accept_prob = torch.ones((), dtype=target_prob.dtype, device=device)
                 else:
                     accept_prob = torch.clamp(target_prob / draft_prob, max=1.0)
+                accept_prob_value = float(accept_prob.item())
+                proposal_accept_prob_sum += accept_prob_value
+                proposal_accept_prob_count += 1
+                if i == 0:
+                    first_accept_prob_sum += accept_prob_value
+                    first_accept_prob_count += 1
                 accept_draw = torch.rand((), device=device, generator=generator)
                 if bool(accept_draw <= accept_prob):
                     accepted_this_round += 1
@@ -906,6 +919,18 @@ def traditional_speculative_sampling_cached(
             "rejected_tokens": rejected_tokens,
             "resample_count": resample_count,
             "bonus_sample_count": bonus_sample_count,
+            "mean_checked_accept_prob": proposal_accept_prob_sum
+            / proposal_accept_prob_count
+            if proposal_accept_prob_count
+            else 0.0,
+            "mean_first_accept_prob": first_accept_prob_sum / first_accept_prob_count
+            if first_accept_prob_count
+            else 0.0,
+            "target_zero_at_draft_count": target_zero_at_draft_count,
+            "target_zero_at_draft_rate": target_zero_at_draft_count
+            / proposal_accept_prob_count
+            if proposal_accept_prob_count
+            else 0.0,
             "state_update_mode": "target_only_step",
         },
     )

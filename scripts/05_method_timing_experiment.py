@@ -45,6 +45,16 @@ TIME_FIELDS = [
 
 STOCHASTIC_METHODS = {"target-only-sampling", "traditional-spec-sampling"}
 
+EXTRA_NUMERIC_FIELDS = [
+    "rejected_tokens",
+    "resample_count",
+    "bonus_sample_count",
+    "mean_checked_accept_prob",
+    "mean_first_accept_prob",
+    "target_zero_at_draft_count",
+    "target_zero_at_draft_rate",
+]
+
 
 FIELDNAMES = [
     "method_name",
@@ -77,9 +87,11 @@ FIELDNAMES = [
     "requires_target_match",
     "validation_status",
     "stochastic_seed",
+    "seed_strategy",
     "temperature",
     "top_k",
     "top_p",
+    *EXTRA_NUMERIC_FIELDS,
     "first_diff_index",
     "extra_json",
     *TIME_FIELDS,
@@ -121,7 +133,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--seed-strategy",
+        default="per-repeat",
+        choices=["fixed", "per-repeat"],
+        help=(
+            "Seed policy for stochastic methods. fixed reuses --seed for every "
+            "repeat; per-repeat derives a deterministic seed from prompt and repeat "
+            "while keeping the same seed across RTT values."
+        ),
+    )
     parser.add_argument("--rtt-ms", type=float, nargs="+", default=[0, 5, 10, 20, 50, 100])
     parser.add_argument(
         "--upload-token-bytes",
@@ -238,6 +260,21 @@ def requires_target_match(method_name: str) -> bool:
 
 def baseline_method_for(method_name: str) -> str:
     return "target-only-sampling" if method_name in STOCHASTIC_METHODS else "target-only"
+
+
+def seed_for_run(
+    base_seed: int | None,
+    strategy: str,
+    prompt_id: int,
+    repeat: int,
+) -> int | None:
+    if base_seed is None:
+        return None
+    if strategy == "fixed":
+        return int(base_seed)
+    if strategy != "per-repeat":
+        raise ValueError(f"Unsupported seed strategy: {strategy}")
+    return int(base_seed) + prompt_id * 1_000_003 + repeat * 10_007
 
 
 def validate_result(result, max_new_tokens: int, timings: dict[str, float]) -> str:
@@ -419,6 +456,12 @@ def main() -> None:
                 encoded = tokenizer(prompt, return_tensors="pt").to(device)
                 input_ids = encoded["input_ids"]
                 baseline_method = baseline_method_for(method_name)
+                run_seed = seed_for_run(
+                    args.seed,
+                    args.seed_strategy,
+                    prompt_id,
+                    repeat,
+                )
                 baseline_key = (baseline_method, prompt_id, repeat)
                 if baseline_key not in baseline_cache:
                     baseline_cache[baseline_key] = run_one(
@@ -443,7 +486,7 @@ def main() -> None:
                         args.temperature,
                         args.top_k,
                         args.top_p,
-                        args.seed,
+                        run_seed,
                     )
                 baseline = baseline_cache[baseline_key]
 
@@ -472,7 +515,7 @@ def main() -> None:
                         args.temperature,
                         args.top_k,
                         args.top_p,
-                        args.seed,
+                        run_seed,
                     )
 
                 matched = baseline.output_ids == result.output_ids
@@ -515,10 +558,17 @@ def main() -> None:
                     "matched_target_only": matched,
                     "requires_target_match": hard_match_required,
                     "validation_status": validation_status,
-                    "stochastic_seed": args.seed if method_name in STOCHASTIC_METHODS else "",
+                    "stochastic_seed": run_seed if method_name in STOCHASTIC_METHODS else "",
+                    "seed_strategy": args.seed_strategy
+                    if method_name in STOCHASTIC_METHODS
+                    else "",
                     "temperature": args.temperature,
                     "top_k": args.top_k,
                     "top_p": args.top_p,
+                    **{
+                        field: result.extra.get(field, 0.0)
+                        for field in EXTRA_NUMERIC_FIELDS
+                    },
                     "first_diff_index": diff_index,
                     "extra_json": json.dumps(result.extra, ensure_ascii=False),
                 }

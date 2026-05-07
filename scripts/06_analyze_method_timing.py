@@ -53,6 +53,17 @@ PARAM_COLUMNS = [
     "top_k",
     "top_p",
     "stochastic_seed",
+    "seed_strategy",
+]
+
+EXTRA_NUMERIC_COLUMNS = [
+    "rejected_tokens",
+    "resample_count",
+    "bonus_sample_count",
+    "mean_checked_accept_prob",
+    "mean_first_accept_prob",
+    "target_zero_at_draft_count",
+    "target_zero_at_draft_rate",
 ]
 
 TIME_LABELS = {
@@ -177,11 +188,13 @@ def _prepare_columns(df: pd.DataFrame) -> None:
     _ensure_column(df, "top_k", 0.0)
     _ensure_column(df, "top_p", 0.0)
     _ensure_column(df, "stochastic_seed", "")
+    _ensure_column(df, "seed_strategy", "legacy")
     _ensure_column(df, "requires_target_match", True)
     _ensure_column(df, "validation_status", "ok")
     df["stochastic_seed"] = df["stochastic_seed"].fillna("")
+    df["seed_strategy"] = df["seed_strategy"].fillna("legacy")
     df["target_verify_mode"] = df["target_verify_mode"].fillna("legacy")
-    for column in TIME_COLUMNS + NETWORK_COLUMNS + LEGACY_TIME_COLUMNS:
+    for column in TIME_COLUMNS + NETWORK_COLUMNS + LEGACY_TIME_COLUMNS + EXTRA_NUMERIC_COLUMNS:
         _ensure_column(df, column, 0.0)
 
 
@@ -391,6 +404,7 @@ def main() -> None:
         "accepted_tokens",
         "drafted_tokens",
         "wasted_branch_time_or_tokens",
+        *EXTRA_NUMERIC_COLUMNS,
         *NETWORK_COLUMNS,
         *TIME_COLUMNS,
         *LEGACY_TIME_COLUMNS,
@@ -477,6 +491,8 @@ def main() -> None:
                 "generated_tokens",
                 "rounds",
                 "drafted_tokens",
+                "mean_first_accept_prob",
+                "target_zero_at_draft_rate",
                 "wasted_branch_time_or_tokens",
             ]
         ].to_string(index=False)

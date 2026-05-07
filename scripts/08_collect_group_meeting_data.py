@@ -50,6 +50,16 @@ DEFAULT_DATASETS = [
     ),
 ]
 
+EXTRA_NUMERIC_COLUMNS = [
+    "rejected_tokens",
+    "resample_count",
+    "bonus_sample_count",
+    "mean_checked_accept_prob",
+    "mean_first_accept_prob",
+    "target_zero_at_draft_count",
+    "target_zero_at_draft_rate",
+]
+
 
 def _require_pandas():
     global pd
@@ -208,6 +218,7 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
         "top_k",
         "top_p",
         "stochastic_seed",
+        "seed_strategy",
         "rtt_ms",
         "method_time",
         "target_only_time",
@@ -219,6 +230,7 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
         "drafted_tokens",
         "drafted_tokens_per_round",
         "accepted_tokens_per_round",
+        *EXTRA_NUMERIC_COLUMNS,
     ]
     for spec in specs:
         summary = _insert_group(_load_csv(spec.summary_path), spec.label)
@@ -226,7 +238,7 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
             if column not in summary.columns:
                 summary[column] = (
                     "legacy"
-                    if column in {"target_verify_mode", "stochastic_seed"}
+                    if column in {"target_verify_mode", "stochastic_seed", "seed_strategy"}
                     else 0.0
                 )
         frames.append(summary[columns])
@@ -251,6 +263,7 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
         "top_k",
         "top_p",
         "stochastic_seed",
+        "seed_strategy",
         "rtt_ms",
         "method_time",
         "speedup_vs_target_only",
@@ -265,7 +278,7 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
             if column not in shares.columns:
                 shares[column] = (
                     "legacy"
-                    if column in {"target_verify_mode", "stochastic_seed"}
+                    if column in {"target_verify_mode", "stochastic_seed", "seed_strategy"}
                     else 0.0
                 )
         frames.append(shares[columns])
@@ -422,10 +435,13 @@ def _write_key_points(
         "top_k",
         "top_p",
         "stochastic_seed",
+        "seed_strategy",
         "rtt_ms",
         "method_time",
         "speedup_vs_target_only",
         "accept_rate",
+        "mean_first_accept_prob",
+        "target_zero_at_draft_rate",
         "rounds",
         "generated_tokens",
         "drafted_tokens",
