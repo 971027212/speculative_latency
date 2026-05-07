@@ -52,6 +52,7 @@ PARAM_COLUMNS = [
     "temperature",
     "top_k",
     "top_p",
+    "sampling_filter",
     "stochastic_seed",
     "seed_strategy",
 ]
@@ -188,12 +189,14 @@ def _prepare_columns(df: pd.DataFrame) -> None:
     _ensure_column(df, "temperature", 1.0)
     _ensure_column(df, "top_k", 0.0)
     _ensure_column(df, "top_p", 0.0)
+    _ensure_column(df, "sampling_filter", "legacy")
     _ensure_column(df, "stochastic_seed", "")
     _ensure_column(df, "seed_strategy", "legacy")
     _ensure_column(df, "requires_target_match", True)
     _ensure_column(df, "validation_status", "ok")
     df["stochastic_seed"] = df["stochastic_seed"].fillna("")
     df["seed_strategy"] = df["seed_strategy"].fillna("legacy")
+    df["sampling_filter"] = df["sampling_filter"].fillna("legacy")
     df["target_verify_mode"] = df["target_verify_mode"].fillna("legacy")
     for column in TIME_COLUMNS + NETWORK_COLUMNS + LEGACY_TIME_COLUMNS + EXTRA_NUMERIC_COLUMNS:
         _ensure_column(df, column, 0.0)

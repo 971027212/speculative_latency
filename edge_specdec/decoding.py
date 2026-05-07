@@ -241,6 +241,13 @@ def _filter_logits_top_k_top_p(
     top_k: int = 0,
     top_p: float = 0.0,
 ) -> torch.Tensor:
+    """Apply optional top-k / top-p filtering.
+
+    top_k <= 0 disables top-k filtering. top_p <= 0 disables nucleus filtering.
+    This matches feifeibear/LLMSpeculativeSampling's default where
+    top_k=0, top_p=0 means sampling from the full softmax distribution.
+    """
+
     filtered = logits.clone()
     vocab_size = filtered.shape[-1]
     if top_k and top_k > 0:
@@ -283,6 +290,18 @@ def _normalize_logits_for_sampling(
         probs = torch.where(sums > 0, probs, fallback)
         sums = probs.sum(dim=-1, keepdim=True)
     return probs / sums.clamp_min(torch.finfo(probs.dtype).tiny)
+
+
+def _sampling_filter_name(top_k: int, top_p: float) -> str:
+    top_k_enabled = top_k > 0
+    top_p_enabled = top_p > 0.0
+    if top_k_enabled and top_p_enabled:
+        return "top_k_top_p"
+    if top_k_enabled:
+        return "top_k"
+    if top_p_enabled:
+        return "top_p"
+    return "full_distribution"
 
 
 def _sample_from_probs(
@@ -634,6 +653,7 @@ def target_only_sampling_cached(
             "temperature": temperature,
             "top_k": top_k,
             "top_p": top_p,
+            "sampling_filter": _sampling_filter_name(top_k, top_p),
             "seed": seed,
         },
     )
@@ -918,6 +938,7 @@ def traditional_speculative_sampling_cached(
             "temperature": temperature,
             "top_k": top_k,
             "top_p": top_p,
+            "sampling_filter": _sampling_filter_name(top_k, top_p),
             "seed": seed,
             "gamma": draft_k,
             "target_verify_mode": target_verify_mode,

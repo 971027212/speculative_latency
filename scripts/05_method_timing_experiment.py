@@ -92,6 +92,7 @@ FIELDNAMES = [
     "temperature",
     "top_k",
     "top_p",
+    "sampling_filter",
     *EXTRA_NUMERIC_FIELDS,
     "first_diff_index",
     "extra_json",
@@ -131,9 +132,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--draft-k", type=int, default=4)
     parser.add_argument("--tree-width", type=int, default=2)
-    parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--top-k", type=int, default=20)
-    parser.add_argument("--top-p", type=float, default=0.9)
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature. Must be > 0 for stochastic methods.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=20,
+        help=(
+            "Top-k filter for stochastic sampling. Use 0 to disable top-k "
+            "filtering and sample from all vocabulary tokens allowed by top-p."
+        ),
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=0.9,
+        help=(
+            "Nucleus top-p filter for stochastic sampling. Use 0 to disable "
+            "top-p filtering; --top-k 0 --top-p 0 is full-distribution "
+            "sampling, matching the upstream library's default."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument(
         "--seed-strategy",
@@ -278,6 +301,27 @@ def seed_for_run(
     return int(base_seed) + prompt_id * 1_000_003 + repeat * 10_007
 
 
+def sampling_filter_name(top_k: int, top_p: float) -> str:
+    top_k_enabled = top_k > 0
+    top_p_enabled = top_p > 0.0
+    if top_k_enabled and top_p_enabled:
+        return "top_k_top_p"
+    if top_k_enabled:
+        return "top_k"
+    if top_p_enabled:
+        return "top_p"
+    return "full_distribution"
+
+
+def validate_sampling_args(args: argparse.Namespace) -> None:
+    if args.temperature <= 0:
+        raise ValueError("--temperature must be > 0 for stochastic sampling.")
+    if args.top_k < 0:
+        raise ValueError("--top-k must be >= 0. Use 0 to disable top-k filtering.")
+    if not 0.0 <= args.top_p <= 1.0:
+        raise ValueError("--top-p must be in [0, 1]. Use 0 to disable top-p filtering.")
+
+
 def validate_result(result, max_new_tokens: int, timings: dict[str, float]) -> str:
     if result.generated_tokens < 0 or result.generated_tokens > max_new_tokens:
         return "bad_length"
@@ -352,6 +396,8 @@ def run_one(
 
 def main() -> None:
     args = parse_args()
+    validate_sampling_args(args)
+    sampling_filter = sampling_filter_name(args.top_k, args.top_p)
     device = choose_device()
     prompts = args.prompt or DEFAULT_PROMPTS
     methods = args.method or available_methods()
@@ -566,6 +612,10 @@ def main() -> None:
                     "temperature": args.temperature,
                     "top_k": args.top_k,
                     "top_p": args.top_p,
+                    "sampling_filter": result.extra.get(
+                        "sampling_filter",
+                        sampling_filter,
+                    ),
                     **{
                         field: result.extra.get(field, 0.0)
                         for field in EXTRA_NUMERIC_FIELDS

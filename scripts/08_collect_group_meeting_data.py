@@ -218,6 +218,7 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
         "temperature",
         "top_k",
         "top_p",
+        "sampling_filter",
         "stochastic_seed",
         "seed_strategy",
         "rtt_ms",
@@ -239,7 +240,13 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
             if column not in summary.columns:
                 summary[column] = (
                     "legacy"
-                    if column in {"target_verify_mode", "stochastic_seed", "seed_strategy"}
+                    if column
+                    in {
+                        "target_verify_mode",
+                        "sampling_filter",
+                        "stochastic_seed",
+                        "seed_strategy",
+                    }
                     else 0.0
                 )
         frames.append(summary[columns])
@@ -263,6 +270,7 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
         "temperature",
         "top_k",
         "top_p",
+        "sampling_filter",
         "stochastic_seed",
         "seed_strategy",
         "rtt_ms",
@@ -279,7 +287,13 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
             if column not in shares.columns:
                 shares[column] = (
                     "legacy"
-                    if column in {"target_verify_mode", "stochastic_seed", "seed_strategy"}
+                    if column
+                    in {
+                        "target_verify_mode",
+                        "sampling_filter",
+                        "stochastic_seed",
+                        "seed_strategy",
+                    }
                     else 0.0
                 )
         frames.append(shares[columns])
@@ -435,6 +449,7 @@ def _write_key_points(
         "temperature",
         "top_k",
         "top_p",
+        "sampling_filter",
         "stochastic_seed",
         "seed_strategy",
         "rtt_ms",
