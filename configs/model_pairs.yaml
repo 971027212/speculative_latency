@@ -8,6 +8,12 @@ model_pairs:
   - name: qwen25-1p5b-local
     target: /home/chajiahao/data/hf_models/Qwen2.5-1.5B
     draft: /home/chajiahao/data/hf_models/Qwen2.5-0.5B
+  - name: qwen25-1p5b-self-local
+    target: /home/chajiahao/data/hf_models/Qwen2.5-1.5B
+    draft: /home/chajiahao/data/hf_models/Qwen2.5-1.5B
+  - name: qwen25-0p5b-self-local
+    target: /home/chajiahao/data/hf_models/Qwen2.5-0.5B
+    draft: /home/chajiahao/data/hf_models/Qwen2.5-0.5B
   - name: qwen25-3b-local
     target: /home/chajiahao/data/hf_models/Qwen2.5-3B
     draft: /home/chajiahao/data/hf_models/Qwen2.5-0.5B

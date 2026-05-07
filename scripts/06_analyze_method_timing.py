@@ -62,6 +62,7 @@ EXTRA_NUMERIC_COLUMNS = [
     "bonus_sample_count",
     "mean_checked_accept_prob",
     "mean_first_accept_prob",
+    "first_token_accept_rate",
     "target_zero_at_draft_count",
     "target_zero_at_draft_rate",
 ]
@@ -492,6 +493,7 @@ def main() -> None:
                 "rounds",
                 "drafted_tokens",
                 "mean_first_accept_prob",
+                "first_token_accept_rate",
                 "target_zero_at_draft_rate",
                 "wasted_branch_time_or_tokens",
             ]

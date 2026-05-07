@@ -56,6 +56,7 @@ EXTRA_NUMERIC_COLUMNS = [
     "bonus_sample_count",
     "mean_checked_accept_prob",
     "mean_first_accept_prob",
+    "first_token_accept_rate",
     "target_zero_at_draft_count",
     "target_zero_at_draft_rate",
 ]
@@ -441,6 +442,7 @@ def _write_key_points(
         "speedup_vs_target_only",
         "accept_rate",
         "mean_first_accept_prob",
+        "first_token_accept_rate",
         "target_zero_at_draft_rate",
         "rounds",
         "generated_tokens",

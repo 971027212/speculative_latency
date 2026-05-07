@@ -51,6 +51,7 @@ EXTRA_NUMERIC_FIELDS = [
     "bonus_sample_count",
     "mean_checked_accept_prob",
     "mean_first_accept_prob",
+    "first_token_accept_rate",
     "target_zero_at_draft_count",
     "target_zero_at_draft_rate",
 ]

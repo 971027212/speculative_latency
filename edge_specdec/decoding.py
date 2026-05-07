@@ -690,6 +690,7 @@ def traditional_speculative_sampling_cached(
     proposal_accept_prob_count = 0
     first_accept_prob_sum = 0.0
     first_accept_prob_count = 0
+    first_token_accepted_count = 0
     target_zero_at_draft_count = 0
     rounds = 0
 
@@ -848,6 +849,8 @@ def traditional_speculative_sampling_cached(
 
         new_tokens = draft_tokens[:accepted_this_round]
         accepted_tokens += accepted_this_round
+        if accepted_this_round > 0:
+            first_token_accepted_count += 1
 
         generated_so_far = output_ids.shape[-1] - prompt_len
         can_add_more = generated_so_far + len(new_tokens) < max_new_tokens
@@ -930,6 +933,9 @@ def traditional_speculative_sampling_cached(
             else 0.0,
             "mean_first_accept_prob": first_accept_prob_sum / first_accept_prob_count
             if first_accept_prob_count
+            else 0.0,
+            "first_token_accept_rate": first_token_accepted_count / rounds
+            if rounds
             else 0.0,
             "target_zero_at_draft_count": target_zero_at_draft_count,
             "target_zero_at_draft_rate": target_zero_at_draft_count
