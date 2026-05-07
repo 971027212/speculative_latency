@@ -654,7 +654,7 @@ def traditional_speculative_sampling_cached(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
-    target_verify_mode: str = "sequential",
+    target_verify_mode: str = "batch",
     suppress_token_id: SuppressTokenIds = None,
     temperature: float = 1.0,
     top_k: int = 0,
@@ -666,7 +666,9 @@ def traditional_speculative_sampling_cached(
     Draft tokens are sampled from q, verified against target probabilities p,
     accepted with min(1, p/q), and replaced from normalize(max(p - q, 0)) on
     rejection. When all draft tokens are accepted, the bonus token is sampled
-    from the target distribution after the draft span.
+    from the target distribution after the draft span. The batch verification
+    path mirrors feifeibear/LLMSpeculativeSampling's KVCacheModel.generate(x, 1)
+    prob-history layout: target position prefix_len+i-1 scores draft token i.
     """
 
     if draft_k < 1:
@@ -916,6 +918,9 @@ def traditional_speculative_sampling_cached(
             "seed": seed,
             "gamma": draft_k,
             "target_verify_mode": target_verify_mode,
+            "upstream_reference": (
+                "feifeibear/LLMSpeculativeSampling sampling/speculative_sampling.py"
+            ),
             "rejected_tokens": rejected_tokens,
             "resample_count": resample_count,
             "bonus_sample_count": bonus_sample_count,

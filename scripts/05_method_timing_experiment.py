@@ -117,13 +117,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target-verify-mode",
-        default="sequential",
+        default="batch",
         choices=["sequential", "batch"],
         help=(
             "Target verification path for kv-cache speculative methods. "
-            "sequential matches target-only's one-token cache path and is "
-            "the conservative correctness default; batch keeps the old "
-            "multi-token verification path."
+            "batch mirrors feifeibear/LLMSpeculativeSampling's cached "
+            "prob-history verification over the full draft span; sequential "
+            "is retained for conservative greedy correctness checks."
         ),
     )
     parser.add_argument("--prompt", action="append", help="Prompt text. Repeatable.")

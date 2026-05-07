@@ -313,7 +313,7 @@ def run_traditional_spec_sampling(
     downlink_token_bytes: int = 4,
     downlink_fixed_bytes: int = 4,
     downlink_bandwidth_mbps: float = 0.0,
-    target_verify_mode: str = "sequential",
+    target_verify_mode: str = "batch",
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 0.0,
