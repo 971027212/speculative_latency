@@ -19,6 +19,10 @@ TIME_COLUMNS = [
     "downlink_transfer_time",
     "posterior_accept_time",
     "cache_update_time",
+    "probability_normalize_time",
+    "random_sample_time",
+    "accept_reject_time",
+    "resample_time",
     "sampling_time",
 ]
 
@@ -45,6 +49,10 @@ PARAM_COLUMNS = [
     "downlink_token_bytes",
     "downlink_fixed_bytes",
     "downlink_bandwidth_mbps",
+    "temperature",
+    "top_k",
+    "top_p",
+    "stochastic_seed",
 ]
 
 TIME_LABELS = {
@@ -57,6 +65,10 @@ TIME_LABELS = {
     "downlink_transfer_time": "downlink transfer",
     "posterior_accept_time": "posterior accept",
     "cache_update_time": "cache update",
+    "probability_normalize_time": "probability normalize",
+    "random_sample_time": "random sample",
+    "accept_reject_time": "accept/reject",
+    "resample_time": "resample",
     "sampling_time": "sampling / argmax",
 }
 
@@ -161,6 +173,14 @@ def _prepare_columns(df: pd.DataFrame) -> None:
         df["downlink_bandwidth_mbps"] = df["uplink_bandwidth_mbps"]
     _ensure_column(df, "downlink_token_bytes", 4.0)
     _ensure_column(df, "downlink_fixed_bytes", 4.0)
+    _ensure_column(df, "temperature", 1.0)
+    _ensure_column(df, "top_k", 0.0)
+    _ensure_column(df, "top_p", 0.0)
+    _ensure_column(df, "stochastic_seed", "")
+    _ensure_column(df, "requires_target_match", True)
+    _ensure_column(df, "validation_status", "ok")
+    df["stochastic_seed"] = df["stochastic_seed"].fillna("")
+    df["target_verify_mode"] = df["target_verify_mode"].fillna("legacy")
     for column in TIME_COLUMNS + NETWORK_COLUMNS + LEGACY_TIME_COLUMNS:
         _ensure_column(df, column, 0.0)
 
@@ -182,11 +202,11 @@ def _write_markdown_report(
         "method",
         stage_share["method_name"] + " / " + stage_share["implementation"],
     )
-    percent_columns = []
+    stage_columns = []
     for column in TIME_COLUMNS:
         percent_column = f"{column}_percent"
         stage_share[percent_column] = stage_share[f"{column}_share"] * 100.0
-        percent_columns.append(percent_column)
+        stage_columns.extend([column, percent_column])
 
     lines = [
         "# Method Timing Network Decomposition",
@@ -287,8 +307,11 @@ def _write_markdown_report(
         "",
         _markdown_table(
             stage_share,
-            ["method"] + percent_columns,
+            ["method"] + stage_columns,
             rename={
+                column: f"{TIME_LABELS[column]}(s)" for column in TIME_COLUMNS
+            }
+            | {
                 f"{column}_percent": f"{TIME_LABELS[column]}(%)"
                 for column in TIME_COLUMNS
             },
@@ -314,16 +337,39 @@ def main() -> None:
     df = pd.read_csv(args.input)
     _prepare_columns(df)
 
-    if not df["matched_target_only"].all():
+    invalid = df[df["validation_status"] != "ok"].copy()
+    if not invalid.empty:
+        raise ValueError(
+            "Some rows failed stochastic/generic validation:\n"
+            + invalid[
+                [
+                    "method_name",
+                    "model_pair",
+                    "prompt_id",
+                    "repeat",
+                    "rtt_ms",
+                    "validation_status",
+                ]
+            ].to_string(index=False)
+        )
+
+    requires_match = df["requires_target_match"].astype(str).str.lower().isin(
+        {"true", "1", "yes"}
+    )
+    matched_target = df["matched_target_only"].astype(str).str.lower().isin(
+        {"true", "1", "yes"}
+    )
+    mismatched_required = requires_match & ~matched_target
+    if mismatched_required.any():
         bad = df.loc[
-            ~df["matched_target_only"],
+            mismatched_required,
             ["method_name", "model_pair", "prompt_id", "repeat", "rtt_ms", "first_diff_index"],
         ]
         if not args.allow_mismatch:
             raise ValueError(f"Some methods mismatched target-only:\n{bad}")
         print("\n=== Mismatch summary ===")
         print(bad.to_string(index=False))
-        df = df[df["matched_target_only"]].copy()
+        df = df[~mismatched_required].copy()
         if df.empty:
             raise ValueError("No matched rows left to analyze.")
 
@@ -378,6 +424,7 @@ def main() -> None:
         }
         denominator = row["method_time"]
         for column in TIME_COLUMNS:
+            base[column] = row[column]
             base[f"{column}_share"] = row[column] / denominator if denominator else 0.0
         share_rows.append(base)
     shares = pd.DataFrame(share_rows)
@@ -441,22 +488,30 @@ def main() -> None:
         "method",
         share_display["method_name"] + " / " + share_display["implementation"],
     )
-    share_display = share_display[
-        ["method"] + [f"{column}_share" for column in TIME_COLUMNS]
-    ]
-    share_display = share_display.rename(
-        columns={f"{column}_share": TIME_LABELS[column] for column in TIME_COLUMNS}
-    )
+    display_columns = ["method"]
+    rename_columns = {}
+    formatters = {}
     for column in TIME_COLUMNS:
-        share_display[TIME_LABELS[column]] = share_display[TIME_LABELS[column]] * 100.0
+        time_label = f"{TIME_LABELS[column]}(s)"
+        percent_label = f"{TIME_LABELS[column]}(%)"
+        percent_column = f"{column}_percent"
+        share_display[percent_column] = share_display[f"{column}_share"] * 100.0
+        display_columns.extend([column, percent_column])
+        rename_columns[column] = time_label
+        rename_columns[percent_column] = percent_label
+        formatters[time_label] = "{:.4f}".format
+        formatters[percent_label] = "{:.2f}".format
+    share_display = share_display[
+        display_columns
+    ].rename(
+        columns=rename_columns
+    )
 
-    print(f"\n=== Stage time shares at RTT={args.plot_rtt_ms} ms (%) ===")
+    print(f"\n=== Stage times and shares at RTT={args.plot_rtt_ms} ms ===")
     print(
         share_display.to_string(
             index=False,
-            formatters={
-                TIME_LABELS[column]: "{:.2f}".format for column in TIME_COLUMNS
-            },
+            formatters=formatters,
         )
     )
 

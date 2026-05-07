@@ -17,6 +17,10 @@ TIME_COLUMNS = [
     "downlink_transfer_time",
     "posterior_accept_time",
     "cache_update_time",
+    "probability_normalize_time",
+    "random_sample_time",
+    "accept_reject_time",
+    "resample_time",
     "sampling_time",
 ]
 
@@ -30,21 +34,19 @@ TIME_LABELS = {
     "downlink_transfer_time": "downlink_transfer",
     "posterior_accept_time": "posterior_accept",
     "cache_update_time": "cache_update",
+    "probability_normalize_time": "probability_normalize",
+    "random_sample_time": "random_sample",
+    "accept_reject_time": "accept_reject",
+    "resample_time": "resample",
     "sampling_time": "sampling_argmax",
 }
 
 DEFAULT_DATASETS = [
     (
-        "SmolLM",
-        "results/method_timing_summary_smollm_kvcache_eager_network_decomp_repeat3.csv",
-        "results/method_timing_stage_shares_smollm_kvcache_eager_network_decomp_repeat3.csv",
-        "results/method_timing_network_cycle_smollm_kvcache_eager_network_decomp_repeat3.csv",
-    ),
-    (
         "Qwen2.5-1.5B",
-        "results/method_timing_summary_qwen25_1p5b_kvcache_eager_network_decomp_repeat3.csv",
-        "results/method_timing_stage_shares_qwen25_1p5b_kvcache_eager_network_decomp_repeat3.csv",
-        "results/method_timing_network_cycle_qwen25_1p5b_kvcache_eager_network_decomp_repeat3.csv",
+        "results/method_timing_summary_qwen25_1p5b_kvcache_eager_stochastic_repeat3.csv",
+        "results/method_timing_stage_shares_qwen25_1p5b_kvcache_eager_stochastic_repeat3.csv",
+        "results/method_timing_network_cycle_qwen25_1p5b_kvcache_eager_stochastic_repeat3.csv",
     ),
 ]
 
@@ -202,6 +204,10 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
         "method_name",
         "implementation",
         "target_verify_mode",
+        "temperature",
+        "top_k",
+        "top_p",
+        "stochastic_seed",
         "rtt_ms",
         "method_time",
         "target_only_time",
@@ -218,7 +224,11 @@ def _collect_method_summary(specs: list[DatasetSpec]) -> pd.DataFrame:
         summary = _insert_group(_load_csv(spec.summary_path), spec.label)
         for column in columns:
             if column not in summary.columns:
-                summary[column] = "legacy" if column == "target_verify_mode" else 0.0
+                summary[column] = (
+                    "legacy"
+                    if column in {"target_verify_mode", "stochastic_seed"}
+                    else 0.0
+                )
         frames.append(summary[columns])
     return pd.concat(frames, ignore_index=True).sort_values(
         ["group", "method_name", "rtt_ms"]
@@ -237,6 +247,10 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
         "method_name",
         "implementation",
         "target_verify_mode",
+        "temperature",
+        "top_k",
+        "top_p",
+        "stochastic_seed",
         "rtt_ms",
         "method_time",
         "speedup_vs_target_only",
@@ -249,7 +263,11 @@ def _collect_stage_shares(specs: list[DatasetSpec], stage_rtt_ms: float) -> pd.D
         shares["method"] = _method_label(shares)
         for column in columns:
             if column not in shares.columns:
-                shares[column] = "legacy" if column == "target_verify_mode" else 0.0
+                shares[column] = (
+                    "legacy"
+                    if column in {"target_verify_mode", "stochastic_seed"}
+                    else 0.0
+                )
         frames.append(shares[columns])
     return pd.concat(frames, ignore_index=True).sort_values(["group", "method"])
 
@@ -389,6 +407,10 @@ def _write_key_points(
         "draft_generation_percent",
         "network_wait_percent",
         "cloud_verification_percent",
+        "probability_normalize_percent",
+        "random_sample_percent",
+        "accept_reject_percent",
+        "resample_percent",
         "cache_update_percent",
         "sampling_argmax_percent",
     ]
@@ -396,6 +418,10 @@ def _write_key_points(
         "group",
         "method_name",
         "target_verify_mode",
+        "temperature",
+        "top_k",
+        "top_p",
+        "stochastic_seed",
         "rtt_ms",
         "method_time",
         "speedup_vs_target_only",

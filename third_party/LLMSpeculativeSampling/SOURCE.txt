@@ -1,0 +1,5 @@
+﻿Source: https://github.com/feifeibear/LLMSpeculativeSampling
+Vendored commit: 59a209d37b2e463459057a784f8bd31c1136a58b
+License: Apache-2.0 (see LICENSE.txt)
+
+This repository vendors the upstream README, LICENSE.txt, and sampling code as a reference for the probability-based traditional speculative sampling experiment. Local experiment code adapts the algorithm for this repository's timing framework, HF KV-cache behavior, and reproducible generator-based sampling.

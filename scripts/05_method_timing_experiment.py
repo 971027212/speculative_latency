@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -32,10 +33,17 @@ TIME_FIELDS = [
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
+    "probability_normalize_time",
+    "random_sample_time",
+    "accept_reject_time",
+    "resample_time",
     "sampling_time",
     "wasted_branch_time_or_tokens",
     "total_decode_time",
 ]
+
+
+STOCHASTIC_METHODS = {"target-only-sampling", "traditional-spec-sampling"}
 
 
 FIELDNAMES = [
@@ -66,6 +74,12 @@ FIELDNAMES = [
     "method_time",
     "speedup_vs_target_only",
     "matched_target_only",
+    "requires_target_match",
+    "validation_status",
+    "stochastic_seed",
+    "temperature",
+    "top_k",
+    "top_p",
     "first_diff_index",
     "extra_json",
     *TIME_FIELDS,
@@ -104,6 +118,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--draft-k", type=int, default=4)
     parser.add_argument("--tree-width", type=int, default=2)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--top-p", type=float, default=0.9)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--rtt-ms", type=float, nargs="+", default=[0, 5, 10, 20, 50, 100])
     parser.add_argument(
         "--upload-token-bytes",
@@ -214,6 +232,36 @@ def first_diff(left: list[int], right: list[int]) -> int:
     return -1
 
 
+def requires_target_match(method_name: str) -> bool:
+    return method_name not in STOCHASTIC_METHODS
+
+
+def baseline_method_for(method_name: str) -> str:
+    return "target-only-sampling" if method_name in STOCHASTIC_METHODS else "target-only"
+
+
+def validate_result(result, max_new_tokens: int, timings: dict[str, float]) -> str:
+    if result.generated_tokens < 0 or result.generated_tokens > max_new_tokens:
+        return "bad_length"
+    for field in TIME_FIELDS:
+        value = float(timings.get(field, 0.0))
+        if not math.isfinite(value):
+            return f"non_finite_{field}"
+    for field in [
+        "generated_tokens",
+        "accepted_tokens",
+        "drafted_tokens",
+        "rounds",
+        "accept_rate",
+    ]:
+        value = float(getattr(result, field))
+        if not math.isfinite(value):
+            return f"non_finite_{field}"
+    if result.drafted_tokens and not (0.0 <= result.accept_rate <= 1.0):
+        return "bad_accept_rate"
+    return "ok"
+
+
 def run_one(
     method_name: str,
     implementation: str,
@@ -233,6 +281,10 @@ def run_one(
     downlink_bandwidth_mbps: float,
     target_verify_mode: str,
     suppress_token_id,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    seed: int | None,
 ):
     runner = RUNNERS[method_name]
     return runner(
@@ -253,6 +305,10 @@ def run_one(
         downlink_fixed_bytes=downlink_fixed_bytes,
         downlink_bandwidth_mbps=downlink_bandwidth_mbps,
         target_verify_mode=target_verify_mode,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        seed=seed,
     )
 
 
@@ -341,6 +397,10 @@ def main() -> None:
                             downlink_bandwidth_mbps,
                             args.target_verify_mode,
                             suppress_token_id,
+                            args.temperature,
+                            args.top_k,
+                            args.top_p,
+                            args.seed,
                         )
 
             work = [
@@ -351,17 +411,18 @@ def main() -> None:
                 for method_name in methods
             ]
 
-            baseline_cache: dict[tuple[int, int], object] = {}
+            baseline_cache: dict[tuple[str, int, int], object] = {}
             for prompt_id, prompt, repeat, rtt_ms, method_name in tqdm(
                 work,
                 desc=f"method timing {pair.name}",
             ):
                 encoded = tokenizer(prompt, return_tensors="pt").to(device)
                 input_ids = encoded["input_ids"]
-                baseline_key = (prompt_id, repeat)
+                baseline_method = baseline_method_for(method_name)
+                baseline_key = (baseline_method, prompt_id, repeat)
                 if baseline_key not in baseline_cache:
                     baseline_cache[baseline_key] = run_one(
-                        "target-only",
+                        baseline_method,
                         args.implementation,
                         target_model,
                         draft_model,
@@ -379,10 +440,14 @@ def main() -> None:
                         downlink_bandwidth_mbps,
                         args.target_verify_mode,
                         suppress_token_id,
+                        args.temperature,
+                        args.top_k,
+                        args.top_p,
+                        args.seed,
                     )
                 baseline = baseline_cache[baseline_key]
 
-                if method_name == "target-only":
+                if method_name == baseline_method:
                     result = baseline
                 else:
                     result = run_one(
@@ -404,10 +469,21 @@ def main() -> None:
                         downlink_bandwidth_mbps,
                         args.target_verify_mode,
                         suppress_token_id,
+                        args.temperature,
+                        args.top_k,
+                        args.top_p,
+                        args.seed,
                     )
 
                 matched = baseline.output_ids == result.output_ids
                 diff_index = first_diff(baseline.output_ids, result.output_ids)
+                timings = result.timings.as_dict()
+                validation_status = validate_result(
+                    result,
+                    args.max_new_tokens,
+                    timings,
+                )
+                hard_match_required = requires_target_match(method_name)
                 row = {
                     "method_name": method_name,
                     "implementation": args.implementation,
@@ -437,15 +513,27 @@ def main() -> None:
                     "speedup_vs_target_only": baseline.timings.total_decode_time
                     / result.timings.total_decode_time,
                     "matched_target_only": matched,
+                    "requires_target_match": hard_match_required,
+                    "validation_status": validation_status,
+                    "stochastic_seed": args.seed if method_name in STOCHASTIC_METHODS else "",
+                    "temperature": args.temperature,
+                    "top_k": args.top_k,
+                    "top_p": args.top_p,
                     "first_diff_index": diff_index,
                     "extra_json": json.dumps(result.extra, ensure_ascii=False),
                 }
-                timings = result.timings.as_dict()
                 row.update({field: timings.get(field, 0.0) for field in TIME_FIELDS})
                 writer.writerow(row)
                 f.flush()
 
-                if not matched:
+                if validation_status != "ok":
+                    raise AssertionError(
+                        "Method validation failed. "
+                        f"method={method_name}, prompt_id={prompt_id}, "
+                        f"status={validation_status}"
+                    )
+
+                if hard_match_required and not matched:
                     mismatch_count += 1
                     baseline_text = tokenizer.decode(
                         baseline.output_ids,

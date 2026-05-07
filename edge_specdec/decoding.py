@@ -28,6 +28,10 @@ TIME_BUCKETS = [
     "target_verify_time",
     "posterior_accept_time",
     "cache_update_time",
+    "probability_normalize_time",
+    "random_sample_time",
+    "accept_reject_time",
+    "resample_time",
     "sampling_time",
     "wasted_branch_time_or_tokens",
 ]
@@ -56,6 +60,10 @@ class DecodeTimings:
     posterior_accept_time: float = 0.0
     cache_update_time: float = 0.0
     kv_or_input_update_time: float = 0.0
+    probability_normalize_time: float = 0.0
+    random_sample_time: float = 0.0
+    accept_reject_time: float = 0.0
+    resample_time: float = 0.0
     sampling_time: float = 0.0
     wasted_branch_time_or_tokens: float = 0.0
     total_decode_time: float = 0.0
@@ -85,6 +93,10 @@ class DecodeTimings:
             "posterior_accept_time": self.posterior_accept_time,
             "cache_update_time": self.cache_update_time,
             "kv_or_input_update_time": self.kv_or_input_update_time,
+            "probability_normalize_time": self.probability_normalize_time,
+            "random_sample_time": self.random_sample_time,
+            "accept_reject_time": self.accept_reject_time,
+            "resample_time": self.resample_time,
             "sampling_time": self.sampling_time,
             "wasted_branch_time_or_tokens": self.wasted_branch_time_or_tokens,
             "total_decode_time": self.total_decode_time,
@@ -222,6 +234,86 @@ def _argmax_next_token(
     suppress_token_id: SuppressTokenIds = None,
 ) -> torch.Tensor:
     return _argmax_token(logits[:, -1, :], suppress_token_id)
+
+
+def _filter_logits_top_k_top_p(
+    logits: torch.Tensor,
+    top_k: int = 0,
+    top_p: float = 0.0,
+) -> torch.Tensor:
+    filtered = logits.clone()
+    vocab_size = filtered.shape[-1]
+    if top_k and top_k > 0:
+        kth_values = torch.topk(filtered, min(top_k, vocab_size), dim=-1).values[..., -1:]
+        filtered = filtered.masked_fill(filtered < kth_values, float("-inf"))
+    if top_p and top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(filtered, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        sorted_remove = cumulative_probs > top_p
+        sorted_remove[..., 1:] = sorted_remove[..., :-1].clone()
+        sorted_remove[..., 0] = False
+        remove = torch.zeros_like(sorted_remove, dtype=torch.bool)
+        remove.scatter_(dim=-1, index=sorted_indices, src=sorted_remove)
+        filtered = filtered.masked_fill(remove, float("-inf"))
+    return filtered
+
+
+def _normalize_logits_for_sampling(
+    logits: torch.Tensor,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    suppress_token_id: SuppressTokenIds = None,
+) -> torch.Tensor:
+    if logits.dim() != 2:
+        raise ValueError(f"Expected 2D logits, got shape {tuple(logits.shape)}")
+    if temperature <= 0:
+        raise ValueError("temperature must be > 0 for stochastic sampling")
+    filtered = _mask_token(logits.float() / temperature, suppress_token_id)
+    filtered = _filter_logits_top_k_top_p(filtered, top_k=top_k, top_p=top_p)
+    probs = torch.softmax(filtered, dim=-1)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    sums = probs.sum(dim=-1, keepdim=True)
+    if bool((sums <= 0).any()):
+        fallback = torch.ones_like(probs)
+        suppressed = _suppressed_token_ids(suppress_token_id)
+        if suppressed:
+            fallback[:, suppressed] = 0.0
+        probs = torch.where(sums > 0, probs, fallback)
+        sums = probs.sum(dim=-1, keepdim=True)
+    return probs / sums.clamp_min(torch.finfo(probs.dtype).tiny)
+
+
+def _sample_from_probs(
+    probs: torch.Tensor,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    return torch.multinomial(probs, num_samples=1, generator=generator)
+
+
+def _residual_distribution(target_probs: torch.Tensor, draft_probs: torch.Tensor) -> torch.Tensor:
+    residual = torch.clamp(target_probs - draft_probs, min=0.0)
+    residual_sum = residual.sum(dim=-1, keepdim=True)
+    return torch.where(
+        residual_sum > 0,
+        residual / residual_sum.clamp_min(torch.finfo(residual.dtype).tiny),
+        target_probs,
+    )
+
+
+def _make_sampling_generator(
+    device: torch.device,
+    seed: int | None,
+) -> torch.Generator | None:
+    if seed is None:
+        return None
+    try:
+        generator = torch.Generator(device=device)
+    except TypeError:
+        generator = torch.Generator(device=device.type)
+    generator.manual_seed(int(seed))
+    return generator
 
 
 def _append_token(input_ids: torch.Tensor, token: torch.Tensor) -> torch.Tensor:
@@ -458,6 +550,364 @@ def target_only_greedy_cached(
         output_ids=output_ids.squeeze(0).tolist(),
         timings=timings,
         generated_tokens=output_ids.shape[-1] - prompt_len,
+    )
+
+
+@torch.inference_mode()
+def target_only_sampling_cached(
+    target_model,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    eos_token_id: int | None = None,
+    suppress_token_id: SuppressTokenIds = None,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    seed: int | None = None,
+) -> DecodeResult:
+    """Autoregressive target sampling with KV cache.
+
+    This is the stochastic baseline for probability-based speculative
+    sampling. It samples from the target model distribution after applying the
+    same temperature/top-k/top-p transform used by speculative verification.
+    """
+
+    device = input_ids.device
+    generator = _make_sampling_generator(device, seed)
+    timings = DecodeTimings()
+    output_ids = input_ids.clone()
+    prompt_len = output_ids.shape[-1]
+
+    _sync_if_cuda(device)
+    total_start = time.perf_counter()
+
+    attention_mask = torch.ones_like(output_ids)
+    with timed_bucket(timings, "prefill_time", device):
+        outputs = target_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
+    past_key_values = outputs.past_key_values
+    next_logits = outputs.logits[:, -1, :]
+
+    for _ in range(max_new_tokens):
+        with timed_bucket(timings, "probability_normalize_time", device):
+            probs = _normalize_logits_for_sampling(
+                next_logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                suppress_token_id=suppress_token_id,
+            )
+        with timed_bucket(timings, "random_sample_time", device):
+            next_token = _sample_from_probs(probs, generator=generator)
+
+        with timed_bucket(timings, "kv_or_input_update_time", device):
+            output_ids = _append_token(output_ids, next_token)
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones_like(next_token)],
+                dim=-1,
+            )
+
+        if eos_token_id is not None and int(next_token.item()) == eos_token_id:
+            break
+
+        with timed_bucket(timings, "target_verify_time", device):
+            outputs = target_model(
+                next_token,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+        past_key_values = outputs.past_key_values
+        next_logits = outputs.logits[:, -1, :]
+
+    _sync_if_cuda(device)
+    timings.total_decode_time = time.perf_counter() - total_start
+    return DecodeResult(
+        output_ids=output_ids.squeeze(0).tolist(),
+        timings=timings,
+        generated_tokens=output_ids.shape[-1] - prompt_len,
+        extra={
+            "sampling": "target_only",
+            "temperature": temperature,
+            "top_k": top_k,
+            "top_p": top_p,
+            "seed": seed,
+        },
+    )
+
+
+@torch.inference_mode()
+def traditional_speculative_sampling_cached(
+    target_model,
+    draft_model,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    draft_k: int = 4,
+    rtt_ms: float = 0.0,
+    eos_token_id: int | None = None,
+    upload_token_bytes: int = 4,
+    upload_bandwidth_mbps: float = 0.0,
+    uplink_bandwidth_mbps: float | None = None,
+    downlink_token_bytes: int = 4,
+    downlink_fixed_bytes: int = 4,
+    downlink_bandwidth_mbps: float = 0.0,
+    target_verify_mode: str = "sequential",
+    suppress_token_id: SuppressTokenIds = None,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    seed: int | None = None,
+) -> DecodeResult:
+    """Probability-based Google-style speculative sampling with KV cache.
+
+    Draft tokens are sampled from q, verified against target probabilities p,
+    accepted with min(1, p/q), and replaced from normalize(max(p - q, 0)) on
+    rejection. When all draft tokens are accepted, the bonus token is sampled
+    from the target distribution after the draft span.
+    """
+
+    if draft_k < 1:
+        raise ValueError("draft_k must be >= 1")
+    if target_verify_mode not in {"batch", "sequential"}:
+        raise ValueError("target_verify_mode must be 'batch' or 'sequential'")
+
+    device = input_ids.device
+    generator = _make_sampling_generator(device, seed)
+    timings = DecodeTimings()
+    output_ids = input_ids.clone()
+    prompt_len = output_ids.shape[-1]
+    accepted_tokens = 0
+    drafted_tokens = 0
+    rejected_tokens = 0
+    resample_count = 0
+    bonus_sample_count = 0
+    rounds = 0
+
+    _sync_if_cuda(device)
+    total_start = time.perf_counter()
+
+    attention_mask = torch.ones_like(output_ids)
+    with timed_bucket(timings, "prefill_time", device):
+        target_outputs = target_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
+        draft_outputs = draft_model(
+            output_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
+    target_past = target_outputs.past_key_values
+    draft_past = draft_outputs.past_key_values
+    target_next_logits = target_outputs.logits[:, -1, :]
+    draft_next_logits = draft_outputs.logits[:, -1, :]
+
+    while output_ids.shape[-1] - prompt_len < max_new_tokens:
+        rounds += 1
+        remaining = max_new_tokens - (output_ids.shape[-1] - prompt_len)
+        this_k = min(draft_k, remaining)
+
+        draft_tokens: list[int] = []
+        draft_probs_for_tokens: list[torch.Tensor] = []
+        provisional_draft_past = _clone_past_key_values(draft_past)
+        provisional_draft_next_logits = draft_next_logits
+
+        for i in range(this_k):
+            with timed_bucket(timings, "probability_normalize_time", device):
+                draft_probs = _normalize_logits_for_sampling(
+                    provisional_draft_next_logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    suppress_token_id=suppress_token_id,
+                )
+            with timed_bucket(timings, "random_sample_time", device):
+                draft_next = _sample_from_probs(draft_probs, generator=generator)
+            token_id = int(draft_next.item())
+            draft_tokens.append(token_id)
+            draft_probs_for_tokens.append(draft_probs)
+            drafted_tokens += 1
+
+            if eos_token_id is not None and token_id == eos_token_id:
+                break
+            if i == this_k - 1:
+                break
+
+            with timed_bucket(timings, "draft_generate_time", device):
+                draft_outputs = _cached_forward(
+                    draft_model,
+                    draft_next,
+                    provisional_draft_past,
+                )
+            provisional_draft_past = draft_outputs.past_key_values
+            provisional_draft_next_logits = draft_outputs.logits[:, -1, :]
+
+        simulate_upload_wait(
+            timings,
+            draft_token_count=len(draft_tokens),
+            rtt_ms=rtt_ms,
+            upload_token_bytes=upload_token_bytes,
+            upload_bandwidth_mbps=upload_bandwidth_mbps,
+            uplink_bandwidth_mbps=uplink_bandwidth_mbps,
+        )
+
+        if target_verify_mode == "batch":
+            draft_tensor = _tokens_tensor(draft_tokens, input_ids)
+            with timed_bucket(timings, "target_verify_time", device):
+                verify_outputs = _cached_forward(
+                    target_model,
+                    draft_tensor,
+                    _clone_past_key_values(target_past),
+                )
+            verify_logits = verify_outputs.logits
+            target_logits_for_draft = [target_next_logits]
+            for i in range(1, len(draft_tokens)):
+                target_logits_for_draft.append(verify_logits[:, i - 1, :])
+            bonus_logits = verify_logits[:, -1, :]
+        else:
+            with timed_bucket(timings, "target_verify_time", device):
+                (
+                    target_logits_for_draft,
+                    bonus_logits,
+                    _verify_past_after_draft,
+                ) = _cached_verify_sequential(
+                    target_model,
+                    draft_tokens,
+                    target_next_logits,
+                    target_past,
+                    input_ids,
+                )
+
+        simulate_downlink_wait(
+            timings,
+            rtt_ms=rtt_ms,
+            response_token_count=1,
+            downlink_token_bytes=downlink_token_bytes,
+            downlink_fixed_bytes=downlink_fixed_bytes,
+            downlink_bandwidth_mbps=downlink_bandwidth_mbps,
+        )
+
+        with timed_bucket(timings, "probability_normalize_time", device):
+            target_probs_for_draft = [
+                _normalize_logits_for_sampling(
+                    logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    suppress_token_id=suppress_token_id,
+                )
+                for logits in target_logits_for_draft
+            ]
+            bonus_probs = _normalize_logits_for_sampling(
+                bonus_logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                suppress_token_id=suppress_token_id,
+            )
+
+        accepted_this_round = 0
+        replacement_token: int | None = None
+        reject_index: int | None = None
+        with timed_bucket(timings, "accept_reject_time", device):
+            for i, draft_token in enumerate(draft_tokens):
+                target_prob = target_probs_for_draft[i][0, draft_token]
+                draft_prob = draft_probs_for_tokens[i][0, draft_token]
+                if float(draft_prob.item()) <= 0.0:
+                    accept_prob = torch.ones((), dtype=target_prob.dtype, device=device)
+                else:
+                    accept_prob = torch.clamp(target_prob / draft_prob, max=1.0)
+                accept_draw = torch.rand((), device=device, generator=generator)
+                if bool(accept_draw <= accept_prob):
+                    accepted_this_round += 1
+                    if eos_token_id is not None and draft_token == eos_token_id:
+                        break
+                else:
+                    reject_index = i
+                    rejected_tokens += 1
+                    break
+
+        new_tokens = draft_tokens[:accepted_this_round]
+        accepted_tokens += accepted_this_round
+
+        generated_so_far = output_ids.shape[-1] - prompt_len
+        can_add_more = generated_so_far + len(new_tokens) < max_new_tokens
+        hit_eos = eos_token_id is not None and eos_token_id in new_tokens
+
+        if can_add_more and not hit_eos:
+            if reject_index is not None:
+                with timed_bucket(timings, "resample_time", device):
+                    residual_probs = _residual_distribution(
+                        target_probs_for_draft[reject_index],
+                        draft_probs_for_tokens[reject_index],
+                    )
+                with timed_bucket(timings, "random_sample_time", device):
+                    replacement = _sample_from_probs(residual_probs, generator=generator)
+                replacement_token = int(replacement.item())
+                resample_count += 1
+                new_tokens.append(replacement_token)
+            elif accepted_this_round == len(draft_tokens):
+                with timed_bucket(timings, "random_sample_time", device):
+                    bonus_token = _sample_from_probs(bonus_probs, generator=generator)
+                bonus_sample_count += 1
+                new_tokens.append(int(bonus_token.item()))
+
+        new_tokens = new_tokens[: max_new_tokens - generated_so_far]
+        if not new_tokens:
+            with timed_bucket(timings, "random_sample_time", device):
+                fallback = _sample_from_probs(target_probs_for_draft[0], generator=generator)
+            new_tokens = [int(fallback.item())]
+
+        with timed_bucket(timings, "kv_or_input_update_time", device):
+            output_ids = torch.cat([output_ids, _tokens_tensor(new_tokens, input_ids)], dim=-1)
+            attention_mask = torch.ones_like(output_ids)
+            previous_len = output_ids.shape[-1] - len(new_tokens)
+            for index, token_id in enumerate(new_tokens):
+                target_outputs = _cached_forward_target_only_step(
+                    target_model,
+                    _tokens_tensor([token_id], input_ids),
+                    target_past,
+                    previous_len + index + 1,
+                )
+                target_past = target_outputs.past_key_values
+                target_next_logits = target_outputs.logits[:, -1, :]
+            draft_outputs = draft_model(
+                output_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
+            draft_past = draft_outputs.past_key_values
+            draft_next_logits = draft_outputs.logits[:, -1, :]
+
+        if eos_token_id is not None and eos_token_id in new_tokens:
+            break
+
+    _sync_if_cuda(device)
+    timings.total_decode_time = time.perf_counter() - total_start
+    return DecodeResult(
+        output_ids=output_ids.squeeze(0).tolist(),
+        timings=timings,
+        generated_tokens=output_ids.shape[-1] - prompt_len,
+        accepted_tokens=accepted_tokens,
+        drafted_tokens=drafted_tokens,
+        rounds=rounds,
+        extra={
+            "sampling": "traditional_speculative",
+            "temperature": temperature,
+            "top_k": top_k,
+            "top_p": top_p,
+            "seed": seed,
+            "gamma": draft_k,
+            "target_verify_mode": target_verify_mode,
+            "rejected_tokens": rejected_tokens,
+            "resample_count": resample_count,
+            "bonus_sample_count": bonus_sample_count,
+            "state_update_mode": "target_only_step",
+        },
     )
 
 
